@@ -10,6 +10,8 @@ export type WorkspaceTab =
   | 'mblock'
   | 'ci'
   | 'chat'
+  | 'studio'
+  | 'stack'
   | 'cabinet';
 
 export type HarnessWorkspaceSlotId = Exclude<WorkspaceTab, 'cabinet'>;
@@ -110,6 +112,24 @@ const SLOT_DEFS: Array<{
     description: 'Каналы подсистем реального времени по WebSocket.',
     bundle: 'dsh-collab',
     order: 7,
+  },
+  {
+    pluginId: 'dsh-ui-studio',
+    tab: 'studio',
+    label: 'CRM · CMS',
+    name: 'Refine, AtomicCRM, Directus, TinaCMS и PostgreSQL',
+    description: 'Управление партнёрами, коллекциями Directus, документами TinaCMS и SQL-консолью PostgreSQL.',
+    bundle: 'dsh-base',
+    order: 8,
+  },
+  {
+    pluginId: 'dsh-ui-stack',
+    tab: 'stack',
+    label: 'Стек · API',
+    name: 'Archify, NATS, Dify, Traefik, Scalar и Storybook',
+    description: 'Граф Archify, шина NATS JetStream, пайплайны Dify, шлюз Traefik, OpenAPI Scalar и Storybook.',
+    bundle: 'dsh-devops',
+    order: 9,
   },
 ];
 

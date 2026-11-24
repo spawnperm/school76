@@ -7,11 +7,12 @@ defaultProfile: cubesat-full
 
 seams:
   dsh-store:
-    description: Mission state persistence (tasks, projects, programs, users)
+    description: Mission state persistence (tasks, projects, programs, users, CRM)
     providers:
       - dsh-store-json
+      - dsh-store-postgres
   dsh-forge:
-    description: Git repository, Markdown llm-wiki, and commit history
+    description: Git repository, Markdown llm-wiki, TinaCMS, and commit history
     providers:
       - dsh-forge-forgejo
   dsh-s3:
@@ -23,13 +24,15 @@ seams:
     providers:
       - dsh-ci-hybrid
   dsh-realtime:
-    description: Real-time engineering channels and online presence
+    description: Real-time engineering channels, NATS JetStream, and online presence
     providers:
       - dsh-realtime-ws
+      - dsh-realtime-nats
   dsh-llm:
     description: Reasoning model adapter for the harness agent loop
     providers:
       - dsh-llm-gemini
+      - dsh-llm-dify
       - dsh-llm-deterministic
   dsh-tools:
     description: Model-callable tool registry over live CubeSat subsystems

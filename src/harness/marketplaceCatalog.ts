@@ -211,6 +211,36 @@ export const MARKETPLACE_CATALOG: MarketplaceModuleDescriptor[] = [
     cordisPlugins: ['dsh-llm-gemini'],
     seamBinding: { seamId: 'dsh-llm', providerId: 'dsh-llm-gemini' },
   },
+  {
+    id: 'mod-portal-studio-crm',
+    name: 'Refine + AtomicCRM + Directus + TinaCMS + PostgreSQL',
+    shortLabel: 'CRM · CMS · PG',
+    category: 'portal',
+    subsystem: 'DATA · CRM/CMS',
+    version: '1.0.0',
+    author: 'school76 Stack',
+    description:
+      'Единый контур управления данными: AtomicCRM на базе @refinedev/core, Directus Data Studio, Git-CMS TinaCMS, PostgreSQL SQL-консоль и схемы Zod.',
+    defaultInstalled: true,
+    defaultActive: true,
+    cordisPlugins: ['dsh-store-postgres', 'dsh-ui-studio'],
+    seamBinding: { seamId: 'dsh-store', providerId: 'dsh-store-postgres' },
+  },
+  {
+    id: 'mod-portal-stack-api',
+    name: 'Archify + NATS + Dify + Traefik + Scalar + Storybook',
+    shortLabel: 'Stack · Gateway · API',
+    category: 'portal',
+    subsystem: 'ARCH · DEVOPS',
+    version: '1.0.0',
+    author: 'school76 Stack',
+    description:
+      'Топология Archify, шина событий NATS JetStream, LLMOps-пайплайны Dify, шлюз Traefik, документация Scalar OpenAPI 3.1 и Storybook Explorer.',
+    defaultInstalled: true,
+    defaultActive: true,
+    cordisPlugins: ['dsh-realtime-nats', 'dsh-llm-dify', 'dsh-ui-stack'],
+    seamBinding: { seamId: 'dsh-realtime', providerId: 'dsh-realtime-nats' },
+  },
 
   // =========================================================================
   // 3. ПРОГРАММНЫЕ РАСШИРЕНИЯ MBLOCK 5 (.mext -> палитра блоков Blockly)

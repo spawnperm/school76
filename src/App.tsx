@@ -18,6 +18,8 @@ import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
 import { MissionStatusBadge } from './components/MissionStatusBadge.tsx';
 import { HarnessConsole } from './components/HarnessConsole.tsx';
 import { MarketplaceView } from './components/MarketplaceView.tsx';
+import { CrmCmsStudioView } from './components/CrmCmsStudioView.tsx';
+import { PlatformStackView } from './components/PlatformStackView.tsx';
 import { useHarnessRuntime } from './hooks/useHarnessRuntime.ts';
 import type { WorkspaceTab } from './harness/frontendRegistry.ts';
 import type { ChatChannelId, CommunityProject, CubeSatTask, Subsystem } from './types/cubesat.ts';
@@ -81,6 +83,7 @@ export default function App() {
     commentPost,
     createTask,
     updateTask,
+    reorderTask,
     deleteTask,
     sendMessage,
     saveProgram,
@@ -314,6 +317,7 @@ export default function App() {
             onFocusTask={setFocusedTaskId}
             onCreateTask={createTask}
             onUpdateTask={updateTask}
+            onReorderTask={reorderTask}
             onDeleteTask={deleteTask}
             onOpenProgram={openProgramInMBlock}
             onDiscussTask={openTaskInChat}
@@ -393,6 +397,7 @@ export default function App() {
           <EngineeringChat
             projectId={activeProject.id}
             projectName={activeProject.name}
+            project={activeProject}
             messages={messages}
             tasks={tasks}
             programs={programs}
@@ -410,6 +415,28 @@ export default function App() {
             onSendMessage={sendMessage}
             onOpenTask={openTaskInBoard}
             onOpenProgram={openProgramInMBlock}
+          />
+        )}
+
+        {resolvedTab === 'studio' && (
+          <CrmCmsStudioView
+            authFetch={authFetch}
+            isAuthenticated={Boolean(currentUser)}
+            onRequireAuth={() => setShowAuthModal(true)}
+            activeProjectName={activeProject.name}
+            projectRepo={activeProject.forgejoRepo || 'school76-1u'}
+          />
+        )}
+
+        {resolvedTab === 'stack' && (
+          <PlatformStackView
+            authFetch={authFetch}
+            isAuthenticated={Boolean(currentUser)}
+            onRequireAuth={() => setShowAuthModal(true)}
+            activeProject={activeProject}
+            projects={projects}
+            tasks={tasks}
+            programs={programs}
           />
         )}
 

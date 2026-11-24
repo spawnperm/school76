@@ -1,9 +1,0 @@
-allowBuilds:
-  '@google/genai': true
-  esbuild: true
-  protobufjs: true
-minimumReleaseAgeExclude:
-  - '@aws-sdk/client-s3@3.1176.0'
-permissions:
-  dotenv:
-    skills: false

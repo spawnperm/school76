@@ -31,7 +31,7 @@ export interface HarnessPluginSnapshot {
   providesSeam?: string;
   missingDeps: string[];
   effectCount: number;
-  uiTab?: 'harness' | 'marketplace' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat';
+  uiTab?: 'harness' | 'marketplace' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat' | 'studio' | 'stack';
   errorMessage?: string;
 }
 

@@ -50,6 +50,8 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-ui-mblock',
       'dsh-ui-ci',
       'dsh-ui-chat',
+      'dsh-ui-studio',
+      'dsh-ui-stack',
     ],
     seamProviders: {
       'dsh-store': 'dsh-store-json',
@@ -202,6 +204,36 @@ export function createServerHarness(
     },
   });
 
+  kernel.plugin(
+    {
+      id: 'dsh-store-postgres',
+      name: 'PostgreSQL 16 + Zod Store',
+      description: 'Реляционный провайдер PostgreSQL (pg.Pool / встроенный SQL-движок) с валидацией Zod для проектов, задач и AtomicCRM.',
+      bundle: 'dsh-base',
+      kind: 'seam-provider',
+      provides: ['store'],
+      providesSeam: 'dsh-store',
+      apply(ctx) {
+        ctx.provide('store', {
+          driver: 'postgresql-16 (pg + zod)',
+          getTasks: port.getTasks,
+          addTask: port.addTask,
+          updateTaskStatus: port.updateTaskStatus,
+          getProjects: port.getProjects,
+          getPrograms: port.getPrograms,
+          getStats: () => ({
+            projects: port.getProjects().length,
+            tasks: port.getTasks().length,
+            programs: port.getPrograms().length,
+            users: port.getUsersCount(),
+            online: port.getOnlineCount(),
+          }),
+        });
+      },
+    },
+    false
+  );
+
   kernel.plugin({
     id: 'dsh-forge-forgejo',
     name: 'Forgejo Git & llm-wiki',
@@ -276,6 +308,29 @@ export function createServerHarness(
       });
     },
   });
+
+  kernel.plugin(
+    {
+      id: 'dsh-realtime-nats',
+      name: 'NATS JetStream + WS Bridge',
+      description: 'Шина событий NATS JetStream с wildcard-маршрутизацией тем и мостом в WebSocket.',
+      bundle: 'dsh-collab',
+      kind: 'seam-provider',
+      provides: ['realtime'],
+      providesSeam: 'dsh-realtime',
+      apply(ctx) {
+        ctx.provide('realtime', {
+          driver: 'nats-jetstream-bridge',
+          broadcast: (event) => {
+            port.broadcast(event);
+            void port.natsPublish?.(`cubesat.ws.${event.type.replace(/:/g, '.')}`, event.payload, 'ws-bridge');
+          },
+          getOnlineCount: port.getOnlineCount,
+        });
+      },
+    },
+    false
+  );
 
   kernel.plugin({
     id: 'dsh-tools-cubesat',
@@ -586,6 +641,117 @@ export function createServerHarness(
             activeBoardProfile: snap.activeBoardProfile,
             activeMBlockExtensions: snap.activeMBlockExtensions,
           };
+        }
+      );
+
+      register(
+        {
+          name: 'postgres.query',
+          seam: 'dsh-store',
+          description: 'Выполнить безопасный SELECT/SHOW запрос к реляционным таблицам PostgreSQL (projects, tasks, programs, crm_contacts, crm_deals).',
+          mutating: false,
+          parameters: {
+            sql: {
+              type: 'string',
+              description: 'SQL запрос (например: SELECT id, title, stage, amount_rub FROM crm_deals LIMIT 5)',
+              required: true,
+            },
+          },
+        },
+        async (args) => {
+          const sql = typeof args.sql === 'string' && args.sql.trim() ? args.sql.trim() : 'SHOW TABLES';
+          if (!port.postgresQuery) throw new Error('PostgreSQL порт не подключён');
+          return port.postgresQuery(sql);
+        }
+      );
+
+      register(
+        {
+          name: 'nats.publish',
+          seam: 'dsh-realtime',
+          description: 'Опубликовать инженерное событие в шину NATS JetStream.',
+          mutating: true,
+          parameters: {
+            subject: {
+              type: 'string',
+              description: 'Тема NATS (например: cubesat.obc.ping)',
+              required: true,
+            },
+            message: {
+              type: 'string',
+              description: 'Полезная нагрузка события',
+              required: true,
+            },
+          },
+        },
+        async (args) => {
+          const subject = typeof args.subject === 'string' && args.subject.trim() ? args.subject.trim() : 'cubesat.agent.event';
+          const message = typeof args.message === 'string' ? args.message : JSON.stringify(args);
+          if (!port.natsPublish) throw new Error('NATS JetStream шина не подключена');
+          return port.natsPublish(subject, { message }, 'cordis-agent');
+        }
+      );
+
+      register(
+        {
+          name: 'directus.list',
+          seam: 'dsh-store',
+          description: 'Получить записи коллекции Directus Data Studio (crm_contacts, crm_deals, cubesat_tasks, cubesat_projects).',
+          mutating: false,
+          parameters: {
+            collection: {
+              type: 'string',
+              description: 'Имя коллекции Directus',
+              required: true,
+              enum: ['crm_contacts', 'crm_deals', 'cubesat_tasks', 'cubesat_projects', 'onboard_programs'],
+            },
+          },
+        },
+        async (args) => {
+          const collection = typeof args.collection === 'string' ? args.collection : 'crm_deals';
+          if (!port.directusList) throw new Error('Directus провайдер не подключён');
+          return port.directusList(collection);
+        }
+      );
+
+      register(
+        {
+          name: 'dify.run_workflow',
+          seam: 'dsh-llm',
+          description: 'Запустить LLMOps-пайплайн Dify (wf-wiki-rag, wf-telemetry-triage, wf-crm-grant-pitch).',
+          mutating: false,
+          parameters: {
+            workflowId: {
+              type: 'string',
+              description: 'Идентификатор пайплайна Dify',
+              enum: ['wf-wiki-rag', 'wf-telemetry-triage', 'wf-crm-grant-pitch'],
+            },
+            query: {
+              type: 'string',
+              description: 'Текст инженерного запроса для Dify',
+              required: true,
+            },
+          },
+        },
+        async (args) => {
+          const workflowId = typeof args.workflowId === 'string' ? args.workflowId : 'wf-wiki-rag';
+          const query = typeof args.query === 'string' ? args.query : '';
+          if (!port.difyRun) throw new Error('Dify workflow engine не подключён');
+          return port.difyRun(workflowId, query, 'school76-1u');
+        }
+      );
+
+      register(
+        {
+          name: 'traefik.inspect',
+          seam: 'dsh-ci',
+          description: 'Получить таблицу маршрутизаторов, сервисов и middleware шлюза Traefik.',
+          mutating: false,
+          parameters: {},
+        },
+        async () => {
+          if (!port.traefikOverview) throw new Error('Traefik шлюз не подключён');
+          return port.traefikOverview();
         }
       );
 
@@ -956,6 +1122,87 @@ export function createServerHarness(
     false
   );
 
+  kernel.plugin(
+    {
+      id: 'dsh-llm-dify',
+      name: 'Dify LLMOps Workflow Adapter',
+      description: 'Выполняет цели агентского цикла через DAG-пайплайн Dify с RAG по Forgejo llm-wiki и хуком в NATS.',
+      bundle: 'dsh-base',
+      kind: 'seam-provider',
+      inject: ['tools'],
+      provides: ['llm'],
+      providesSeam: 'dsh-llm',
+      apply(ctx) {
+        ctx.provide('llm', {
+          providerId: 'dsh-llm-dify',
+          modelName: 'dify-workflow-rag-v1',
+          configured: true,
+          planAndRun: async (goal, projectId) => {
+            const startedAt = new Date().toISOString();
+            const t0 = Date.now();
+            const steps: HarnessAgentStep[] = [
+              {
+                id: 'step-1',
+                step: 1,
+                kind: 'thought',
+                title: 'Маршрутизация цели в Dify LLMOps DAG',
+                detail: `Выбор пайплайна Dify для проекта ${projectId || 'school76-1u'}`,
+              },
+              {
+                id: 'step-2',
+                step: 2,
+                kind: 'tool_call',
+                title: 'Запуск dify.run_workflow',
+                detail: 'RAG + LLM + NATS Hook',
+                toolName: 'dify.run_workflow',
+                toolArgs: { workflowId: 'wf-wiki-rag', query: goal },
+              },
+            ];
+            const execRes = await ctx.service('tools').execute('dify.run_workflow', {
+              workflowId: 'wf-wiki-rag',
+              query: goal,
+            });
+            const out = (execRes.output || {}) as { answer?: string };
+            const finalAnswer =
+              typeof out.answer === 'string' && out.answer
+                ? out.answer
+                : 'Пайплайн Dify завершил обработку запроса.';
+            steps.push({
+              id: 'step-3',
+              step: 3,
+              kind: 'tool_result',
+              title: 'Результат Dify Workflow',
+              detail: `Выполнено за ${execRes.durationMs} мс`,
+              toolName: 'dify.run_workflow',
+              toolOutput: execRes.output,
+              durationMs: execRes.durationMs,
+            });
+            steps.push({
+              id: 'step-4',
+              step: 4,
+              kind: 'answer',
+              title: 'Ответ Dify LLMOps',
+              detail: finalAnswer,
+            });
+            return {
+              runId: `run-${Date.now().toString(36)}`,
+              goal,
+              providerId: 'dsh-llm-dify',
+              profileId: kernel.getActiveProfileId(),
+              status: 'completed',
+              startedAt,
+              finishedAt: new Date().toISOString(),
+              durationMs: Date.now() - t0,
+              steps,
+              finalAnswer,
+            };
+          },
+        });
+      },
+    },
+    false
+  );
+
   kernel.plugin({
     id: 'dsh-agent-loop',
     name: 'DeepSeek-Harness Agent Loop',
@@ -989,7 +1236,7 @@ export function createServerHarness(
     name: string;
     description: string;
     bundle: 'dsh-base' | 'dsh-cubesat' | 'dsh-devops' | 'dsh-collab';
-    uiTab: 'harness' | 'marketplace' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat';
+    uiTab: 'harness' | 'marketplace' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat' | 'studio' | 'stack';
     inject: string[];
     locked?: boolean;
   }> = [
@@ -1058,6 +1305,22 @@ export function createServerHarness(
       bundle: 'dsh-collab',
       uiTab: 'chat',
       inject: ['realtime'],
+    },
+    {
+      id: 'dsh-ui-studio',
+      name: 'CRM · CMS (Refine, AtomicCRM, Directus, TinaCMS, PostgreSQL)',
+      description: 'Управление партнёрами и грантами, headless-коллекции Directus, Git-редактор TinaCMS и SQL-консоль PostgreSQL.',
+      bundle: 'dsh-base',
+      uiTab: 'studio',
+      inject: ['store'],
+    },
+    {
+      id: 'dsh-ui-stack',
+      name: 'Стек · API (Archify, NATS, Dify, Traefik, Scalar, Storybook)',
+      description: 'Топология Archify, шина NATS JetStream, пайплайны Dify, шлюз Traefik, OpenAPI Scalar и Storybook.',
+      bundle: 'dsh-devops',
+      uiTab: 'stack',
+      inject: ['store'],
     },
   ];
 

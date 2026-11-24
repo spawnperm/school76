@@ -61,6 +61,13 @@ import {
   sanitizeGitHubRepo,
 } from './server/githubSync.ts';
 import { createServerHarness, registerHarnessRoutes } from './server/harness/runtime.ts';
+import { PostgresMissionStore } from './server/postgresStore.ts';
+import { NatsEventBus } from './server/natsBus.ts';
+import { TraefikGateway } from './server/traefikGateway.ts';
+import { DirectusHeadlessService } from './server/directusService.ts';
+import { TinaCmsService } from './server/tinacmsService.ts';
+import { DifyWorkflowService } from './server/difyService.ts';
+import { registerPlatformRoutes } from './server/platformRoutes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -762,8 +769,19 @@ async function startServer() {
     }
   }
 
+  const traefik = new TraefikGateway();
+  const natsBus = new NatsEventBus();
+  const pgStore = new PostgresMissionStore(__dirname, {
+    getProjects: () => state.projects,
+    getTasks: () => state.tasks,
+    getPrograms: () => state.programs,
+  });
+  const tinacmsService = new TinaCmsService(natsBus);
+  const difyService = new DifyWorkflowService(natsBus, pgStore);
+
   const app = express();
   app.use(express.json({ limit: '12mb' }));
+  app.use(traefik.middleware());
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
@@ -816,34 +834,74 @@ async function startServer() {
     });
   }
 
+  const createTaskFromPort = (input: {
+    projectId?: string;
+    title: string;
+    description?: string;
+    subsystem?: Subsystem;
+    priority?: 'low' | 'medium' | 'high' | 'critical';
+    assignee?: string;
+  }) => {
+    const id = `SAT-${state.nextTaskSeq++}`;
+    const now = new Date().toISOString();
+    const task: CubeSatTask = {
+      id,
+      projectId: clampStr(input.projectId, 64, 'school76-1u') || 'school76-1u',
+      title: clampStr(input.title, 140) || 'Новая задача',
+      description: clampStr(input.description, 2000),
+      subsystem: VALID_SUBSYSTEMS.has(input.subsystem as Subsystem)
+        ? (input.subsystem as Subsystem)
+        : 'OBC',
+      status: 'backlog',
+      priority: VALID_PRIORITIES.has(input.priority as TaskPriority)
+        ? (input.priority as TaskPriority)
+        : 'medium',
+      assignee: clampStr(input.assignee, 64, 'DeepSeek-Harness') || 'DeepSeek-Harness',
+      startDate: now.slice(0, 10),
+      progressPct: 0,
+      checklist: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.tasks.unshift(task);
+    saveState(state);
+    return task;
+  };
+
+  const directusService = new DirectusHeadlessService(pgStore, natsBus, {
+    getProjects: () => state.projects,
+    getTasks: () => state.tasks,
+    createTask: createTaskFromPort,
+    updateTask: (id, patch) => {
+      const idx = state.tasks.findIndex((t) => t.id === id);
+      if (idx === -1) return null;
+      const updated: CubeSatTask = {
+        ...state.tasks[idx],
+        ...patch,
+        id,
+        updatedAt: new Date().toISOString(),
+      };
+      state.tasks[idx] = updated;
+      saveState(state);
+      broadcast({ type: 'task:updated', payload: updated });
+      return updated;
+    },
+    deleteTask: (id) => {
+      const before = state.tasks.length;
+      state.tasks = state.tasks.filter((t) => t.id !== id);
+      if (state.tasks.length !== before) {
+        saveState(state);
+        broadcast({ type: 'task:deleted', payload: { id } });
+        return true;
+      }
+      return false;
+    },
+    getPrograms: () => state.programs,
+  });
+
   const harnessRuntime = createServerHarness(__dirname, {
     getTasks: () => state.tasks,
-    addTask: (input) => {
-      const id = `SAT-${state.nextTaskSeq++}`;
-      const now = new Date().toISOString();
-      const task: CubeSatTask = {
-        id,
-        projectId: clampStr(input.projectId, 64, 'school76-1u') || 'school76-1u',
-        title: clampStr(input.title, 140) || 'Новая задача',
-        description: clampStr(input.description, 2000),
-        subsystem: VALID_SUBSYSTEMS.has(input.subsystem as Subsystem)
-          ? (input.subsystem as Subsystem)
-          : 'OBC',
-        status: 'backlog',
-        priority: VALID_PRIORITIES.has(input.priority as TaskPriority)
-          ? (input.priority as TaskPriority)
-          : 'medium',
-        assignee: clampStr(input.assignee, 64, 'DeepSeek-Harness') || 'DeepSeek-Harness',
-        startDate: now.slice(0, 10),
-        progressPct: 0,
-        checklist: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-      state.tasks.unshift(task);
-      saveState(state);
-      return task;
-    },
+    addTask: createTaskFromPort,
     updateTaskStatus: (taskId, status, progressPct) => {
       const idx = state.tasks.findIndex((t) => t.id === taskId);
       if (idx === -1) return null;
@@ -868,9 +926,26 @@ async function startServer() {
     getOnlineCount: () => clients.size,
     broadcast,
     syncTasksToForgejo,
+    postgresQuery: (sql) => pgStore.executeReadOnlySql(sql),
+    postgresTables: () => pgStore.getTablesSchema(),
+    natsPublish: (subject, payload, publisher) => natsBus.publish(subject, payload, publisher),
+    natsQuery: (subject) => natsBus.queryMessages(subject),
+    directusList: (collection, search) => directusService.listItems(collection, search),
+    difyRun: (workflowId, query, projectId) => difyService.runWorkflow(workflowId, query, projectId),
+    traefikOverview: () => traefik.getOverview(),
   });
 
   registerHarnessRoutes(app, harnessRuntime);
+  registerPlatformRoutes(app, {
+    pgStore,
+    nats: natsBus,
+    directus: directusService,
+    tinacms: tinacmsService,
+    traefik,
+    dify: difyService,
+    harness: harnessRuntime,
+    requireAuth,
+  });
 
   app.get('/api/health', (_req, res) => {
     const h = harnessRuntime.getSnapshot();
@@ -2111,6 +2186,46 @@ ${recentCommitsText}`;
             break;
           }
 
+          case 'task:reorder': {
+            const { taskId, status, beforeTaskId, afterTaskId } = msg.payload;
+            if (!VALID_STATUSES.has(status)) return;
+            const currentIdx = state.tasks.findIndex((t) => t.id === taskId);
+            if (currentIdx === -1) return;
+            const existing = state.tasks[currentIdx];
+            const statusChanged = existing.status !== status;
+            const updated: CubeSatTask = {
+              ...existing,
+              status,
+              progressPct: status === 'done' ? 100 : existing.progressPct,
+              updatedAt: new Date().toISOString(),
+            };
+            const remaining = state.tasks.filter((t) => t.id !== taskId);
+            let insertIdx = -1;
+            if (beforeTaskId) {
+              insertIdx = remaining.findIndex((t) => t.id === beforeTaskId);
+            }
+            if (insertIdx === -1 && afterTaskId) {
+              const afterIdx = remaining.findIndex((t) => t.id === afterTaskId);
+              if (afterIdx !== -1) insertIdx = afterIdx + 1;
+            }
+            if (insertIdx === -1) {
+              remaining.push(updated);
+            } else {
+              remaining.splice(insertIdx, 0, updated);
+            }
+            state.tasks = remaining;
+            saveState(state);
+            if (statusChanged) {
+              syncTasksToForgejo(
+                updated.projectId,
+                `Перемещена задача ${updated.id} в статус ${updated.status}`,
+                clients.get(ws)?.name || updated.assignee
+              );
+            }
+            broadcast({ type: 'task:reordered', payload: { tasks: state.tasks } });
+            break;
+          }
+
           case 'task:delete': {
             const { id } = msg.payload;
             const deletedTask = state.tasks.find((t) => t.id === id);
@@ -2139,6 +2254,7 @@ ${recentCommitsText}`;
                 ? p.id
                 : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
             if (state.messages.some((m) => m.id === id)) return;
+            const kind = p.kind === 'system' ? 'system' : 'user';
             const message: ChatMessage = {
               id,
               projectId: clampStr(p.projectId, 64, 'school76-1u') || 'school76-1u',
@@ -2146,6 +2262,8 @@ ${recentCommitsText}`;
               author: clampStr(p.author, 48, 'Инженер school76') || 'Инженер school76',
               authorRole: clampStr(p.authorRole, 64, 'Инженер') || 'Инженер',
               text: text || 'Фрагмент кода бортовой программы',
+              kind: kind === 'system' ? 'system' : undefined,
+              command: kind === 'system' ? clampStr(p.command, 32) || undefined : undefined,
               taskRefId: clampStr(p.taskRefId, 32) || undefined,
               programRefId: clampStr(p.programRefId, 80) || undefined,
               codeSnippet:

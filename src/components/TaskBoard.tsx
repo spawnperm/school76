@@ -2,6 +2,27 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
 import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCorners,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
   Plus,
   Search,
   MessageSquare,
@@ -11,6 +32,7 @@ import {
   CheckSquare,
   Square,
   Calendar as CalendarIcon,
+  GripVertical,
 } from 'lucide-react';
 import type {
   ChatChannelId,
@@ -19,6 +41,7 @@ import type {
   OnboardProgram,
   Subsystem,
   TaskPriority,
+  TaskReorderPayload,
   TaskStatus,
 } from '../types/cubesat.ts';
 import {
@@ -46,6 +69,7 @@ interface TaskBoardProps {
   onFocusTask: (id: string | null) => void;
   onCreateTask: (payload: Omit<CubeSatTask, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onUpdateTask: (id: string, patch: Partial<Omit<CubeSatTask, 'id' | 'createdAt'>>) => void;
+  onReorderTask?: (payload: TaskReorderPayload) => void;
   onDeleteTask: (id: string) => void;
   onOpenProgram: (programId: string) => void;
   onDiscussTask: (task: CubeSatTask) => void;
@@ -69,6 +93,235 @@ function parseIsoDate(iso?: string): Date | null {
   return new Date(y, m - 1, d);
 }
 
+const COLUMN_DROP_PREFIX = 'col:';
+
+function findColumnContainer(
+  columns: Record<TaskStatus, string[]>,
+  id: string
+): TaskStatus | null {
+  if (id.startsWith(COLUMN_DROP_PREFIX)) {
+    const status = id.slice(COLUMN_DROP_PREFIX.length) as TaskStatus;
+    return STATUS_ORDER.includes(status) ? status : null;
+  }
+  for (const status of STATUS_ORDER) {
+    if (columns[status].includes(id)) return status;
+  }
+  return null;
+}
+
+interface TaskCardContentProps {
+  task: CubeSatTask;
+  programs: OnboardProgram[];
+  onOpenProgram: (programId: string) => void;
+  onDiscussTask: (task: CubeSatTask) => void;
+  isOverlay?: boolean;
+}
+
+const TaskCardContent: React.FC<TaskCardContentProps> = ({
+  task,
+  programs,
+  onOpenProgram,
+  onDiscussTask,
+  isOverlay = false,
+}) => {
+  const linkedProg = programs.find((p) => p.id === task.linkedProgramId);
+  const chkTotal = task.checklist?.length || 0;
+  const chkDone = task.checklist?.filter((c) => c.done).length || 0;
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+        <span className="inline-flex items-center gap-1 font-mono font-medium text-slate-700 min-w-0">
+          <GripVertical
+            className={`w-3.5 h-3.5 shrink-0 ${
+              isOverlay ? 'text-sky-600' : 'text-slate-300 group-hover:text-slate-500'
+            }`}
+          />
+          <span className="truncate">
+            {task.id} · {task.subsystem}
+          </span>
+        </span>
+        <span className={`${PRIORITY_TEXT_CLASS[task.priority]} shrink-0`}>
+          {TASK_PRIORITY_LABELS[task.priority]}
+        </span>
+      </div>
+
+      <h3 className="text-sm font-semibold text-slate-900 leading-snug">
+        {task.title}
+      </h3>
+
+      <div className="flex items-center justify-between gap-2 pt-1 text-xs text-slate-500">
+        <span className="truncate">{task.assignee}</span>
+        <span className="font-mono tabular-nums shrink-0">
+          {chkTotal > 0 ? `✓ ${chkDone}/${chkTotal} · ` : ''}
+          {task.dueDate || '—'}
+        </span>
+      </div>
+
+      {(linkedProg || task.linkedChannel) && (
+        <div
+          className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {linkedProg ? (
+            <button
+              type="button"
+              onClick={() => onOpenProgram(linkedProg.id)}
+              className="inline-flex items-center gap-1 text-sky-700 hover:underline truncate"
+            >
+              <Cpu className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">{linkedProg.name}</span>
+            </button>
+          ) : (
+            <span />
+          )}
+          <button
+            type="button"
+            onClick={() => onDiscussTask(task)}
+            className="inline-flex items-center gap-1 text-slate-600 hover:text-sky-700 shrink-0"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            Чат
+          </button>
+        </div>
+      )}
+    </>
+  );
+};
+
+interface SortableTaskCardProps {
+  task: CubeSatTask;
+  programs: OnboardProgram[];
+  onFocusTask: (id: string | null) => void;
+  onOpenProgram: (programId: string) => void;
+  onDiscussTask: (task: CubeSatTask) => void;
+}
+
+const SortableTaskCard: React.FC<SortableTaskCardProps> = ({
+  task,
+  programs,
+  onFocusTask,
+  onOpenProgram,
+  onDiscussTask,
+}) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: task.id,
+    data: { type: 'task', task },
+  });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      onClick={() => onFocusTask(task.id)}
+      className={`group rounded-md p-3.5 space-y-2 transition-colors touch-none select-none ${
+        isDragging
+          ? 'bg-sky-50/40 border border-dashed border-sky-400 opacity-40 cursor-grabbing'
+          : 'bg-white border border-slate-200 hover:border-sky-400 cursor-grab active:cursor-grabbing'
+      }`}
+    >
+      <TaskCardContent
+        task={task}
+        programs={programs}
+        onOpenProgram={onOpenProgram}
+        onDiscussTask={onDiscussTask}
+      />
+    </article>
+  );
+};
+
+interface KanbanColumnProps {
+  status: TaskStatus;
+  colTasks: CubeSatTask[];
+  programs: OnboardProgram[];
+  isDropTarget: boolean;
+  onFocusTask: (id: string | null) => void;
+  onOpenProgram: (programId: string) => void;
+  onDiscussTask: (task: CubeSatTask) => void;
+}
+
+const KanbanColumn: React.FC<KanbanColumnProps> = ({
+  status,
+  colTasks,
+  programs,
+  isDropTarget,
+  onFocusTask,
+  onOpenProgram,
+  onDiscussTask,
+}) => {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `${COLUMN_DROP_PREFIX}${status}`,
+    data: { type: 'column', status },
+  });
+
+  const highlighted = isOver || isDropTarget;
+
+  return (
+    <section
+      ref={setNodeRef}
+      className={`rounded-lg p-3 space-y-3 border transition-colors min-h-[220px] flex flex-col ${
+        highlighted
+          ? 'bg-sky-50/70 border-sky-400 ring-1 ring-sky-200'
+          : 'bg-slate-100/70 border-slate-200'
+      }`}
+    >
+      <div className="flex items-center justify-between px-1">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-600">
+          {TASK_STATUS_LABELS[status]}
+        </h2>
+        <span className="text-xs font-mono tabular-nums text-slate-500">
+          {colTasks.length}
+        </span>
+      </div>
+
+      <SortableContext
+        items={colTasks.map((t) => t.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="space-y-2.5 flex-1">
+          {colTasks.length === 0 ? (
+            <div
+              className={`h-24 rounded-md border border-dashed flex items-center justify-center text-xs px-3 text-center transition-colors ${
+                highlighted
+                  ? 'border-sky-400 text-sky-700 bg-white/70'
+                  : 'border-slate-300/80 text-slate-400 bg-white/40'
+              }`}
+            >
+              Перетащите задачу сюда
+            </div>
+          ) : (
+            colTasks.map((task) => (
+              <SortableTaskCard
+                key={task.id}
+                task={task}
+                programs={programs}
+                onFocusTask={onFocusTask}
+                onOpenProgram={onOpenProgram}
+                onDiscussTask={onDiscussTask}
+              />
+            ))
+          )}
+        </div>
+      </SortableContext>
+    </section>
+  );
+};
+
 export const TaskBoard: React.FC<TaskBoardProps> = ({
   projectId,
   projectName,
@@ -80,6 +333,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   onFocusTask,
   onCreateTask,
   onUpdateTask,
+  onReorderTask,
   onDeleteTask,
   onOpenProgram,
   onDiscussTask,
@@ -116,6 +370,19 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const [startDate, setStartDate] = useState('2026-11-24');
   const [dueDate, setDueDate] = useState('2026-12-01');
 
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [dragColumns, setDragColumns] = useState<Record<TaskStatus, string[]> | null>(null);
+  const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
   const projectTasks = useMemo(
     () => filterProjectTasks(tasks, projectId),
     [tasks, projectId]
@@ -134,6 +401,28 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       );
     });
   }, [projectTasks, subsystemFilter, searchQuery]);
+
+  const tasksById = useMemo(() => {
+    const map = new Map<string, CubeSatTask>();
+    for (const t of filteredTasks) map.set(t.id, t);
+    return map;
+  }, [filteredTasks]);
+
+  const baseColumns = useMemo(() => {
+    const cols: Record<TaskStatus, string[]> = {
+      backlog: [],
+      in_progress: [],
+      review: [],
+      done: [],
+    };
+    for (const t of filteredTasks) {
+      cols[t.status].push(t.id);
+    }
+    return cols;
+  }, [filteredTasks]);
+
+  const displayColumns = dragColumns || baseColumns;
+  const activeDragTask = activeDragId ? tasksById.get(activeDragId) || null : null;
 
   const activeTask = useMemo(
     () => tasks.find((t) => t.id === focusedTaskId) || null,
@@ -255,6 +544,129 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     const progressPct = Math.round((doneCount / updated.length) * 100);
     onUpdateTask(task.id, { checklist: updated, progressPct });
     setTodoDrafts((prev) => ({ ...prev, [task.id]: '' }));
+  };
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const id = String(event.active.id);
+    setActiveDragId(id);
+    setDragColumns({
+      backlog: [...baseColumns.backlog],
+      in_progress: [...baseColumns.in_progress],
+      review: [...baseColumns.review],
+      done: [...baseColumns.done],
+    });
+    const startedTask = tasksById.get(id);
+    setDragOverStatus(startedTask?.status || null);
+  };
+
+  const handleDragOver = (event: DragOverEvent) => {
+    const { active, over } = event;
+    if (!over) {
+      setDragOverStatus(null);
+      return;
+    }
+
+    const activeId = String(active.id);
+    const overId = String(over.id);
+
+    const currentSnapshot = dragColumns || baseColumns;
+    const targetStatus = findColumnContainer(currentSnapshot, overId);
+    setDragOverStatus(targetStatus);
+
+    setDragColumns((prev) => {
+      const current = prev || baseColumns;
+      const activeContainer = findColumnContainer(current, activeId);
+      const overContainer = findColumnContainer(current, overId);
+
+      if (!activeContainer || !overContainer || activeContainer === overContainer) {
+        return prev;
+      }
+
+      const sourceItems = current[activeContainer].filter((id) => id !== activeId);
+      const targetItems = [...current[overContainer]];
+
+      let newIndex: number;
+      if (overId.startsWith(COLUMN_DROP_PREFIX)) {
+        newIndex = targetItems.length;
+      } else {
+        const overIndex = targetItems.indexOf(overId);
+        const isBelowOverItem =
+          Boolean(active.rect.current.translated) &&
+          active.rect.current.translated!.top > over.rect.top + over.rect.height / 2;
+        newIndex =
+          overIndex >= 0
+            ? isBelowOverItem
+              ? overIndex + 1
+              : overIndex
+            : targetItems.length;
+      }
+
+      targetItems.splice(newIndex, 0, activeId);
+
+      return {
+        ...current,
+        [activeContainer]: sourceItems,
+        [overContainer]: targetItems,
+      };
+    });
+  };
+
+  const handleDragCancel = () => {
+    setActiveDragId(null);
+    setDragColumns(null);
+    setDragOverStatus(null);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    const snapshot = dragColumns;
+    setActiveDragId(null);
+    setDragColumns(null);
+    setDragOverStatus(null);
+
+    if (!over || !snapshot) return;
+
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    const activeContainer = findColumnContainer(snapshot, activeId);
+    const overContainer = findColumnContainer(snapshot, overId);
+
+    if (!activeContainer || !overContainer) return;
+
+    let finalColIds = [...snapshot[overContainer]];
+    if (activeContainer === overContainer && !overId.startsWith(COLUMN_DROP_PREFIX)) {
+      const oldIndex = finalColIds.indexOf(activeId);
+      const newIndex = finalColIds.indexOf(overId);
+      if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+        finalColIds = arrayMove(finalColIds, oldIndex, newIndex);
+      }
+    }
+
+    const originalTask = tasksById.get(activeId);
+    if (!originalTask) return;
+
+    const sameColumnAsStart = originalTask.status === overContainer;
+    const sameOrderAsStart =
+      sameColumnAsStart &&
+      finalColIds.length === baseColumns[overContainer].length &&
+      finalColIds.every((id, idx) => id === baseColumns[overContainer][idx]);
+
+    if (sameOrderAsStart) return;
+
+    const pos = finalColIds.indexOf(activeId);
+    const beforeTaskId = pos >= 0 && pos + 1 < finalColIds.length ? finalColIds[pos + 1] : null;
+    const afterTaskId = pos > 0 ? finalColIds[pos - 1] : null;
+
+    if (onReorderTask) {
+      onReorderTask({
+        taskId: activeId,
+        status: overContainer,
+        beforeTaskId,
+        afterTaskId,
+      });
+    } else if (!sameColumnAsStart) {
+      onUpdateTask(activeId, { status: overContainer });
+    }
   };
 
   return (
@@ -429,91 +841,49 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           </button>
         </div>
       ) : viewMode === 'kanban' ? (
-        /* 1. KANBAN BOARD */
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
-          {STATUS_ORDER.map((status) => {
-            const colTasks = filteredTasks.filter((t) => t.status === status);
-            return (
-              <section
-                key={status}
-                className="bg-slate-100/70 border border-slate-200 rounded-lg p-3 space-y-3"
-              >
-                <div className="flex items-center justify-between px-1">
-                  <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-600">
-                    {TASK_STATUS_LABELS[status]}
-                  </h2>
-                  <span className="text-xs font-mono tabular-nums text-slate-500">
-                    {colTasks.length}
-                  </span>
-                </div>
+        /* 1. KANBAN BOARD (Drag-and-Drop via @dnd-kit) */
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
+            {STATUS_ORDER.map((status) => {
+              const colTasks = displayColumns[status]
+                .map((id) => tasksById.get(id))
+                .filter((t): t is CubeSatTask => Boolean(t));
+              return (
+                <KanbanColumn
+                  key={status}
+                  status={status}
+                  colTasks={colTasks}
+                  programs={programs}
+                  isDropTarget={Boolean(activeDragId) && dragOverStatus === status}
+                  onFocusTask={onFocusTask}
+                  onOpenProgram={onOpenProgram}
+                  onDiscussTask={onDiscussTask}
+                />
+              );
+            })}
+          </div>
 
-                <div className="space-y-2.5">
-                  {colTasks.map((task) => {
-                    const linkedProg = programs.find((p) => p.id === task.linkedProgramId);
-                    const chkTotal = task.checklist?.length || 0;
-                    const chkDone = task.checklist?.filter((c) => c.done).length || 0;
-                    return (
-                      <article
-                        key={task.id}
-                        onClick={() => onFocusTask(task.id)}
-                        className="bg-white border border-slate-200 rounded-md p-3.5 hover:border-sky-400 transition-colors cursor-pointer space-y-2"
-                      >
-                        <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
-                          <span className="font-mono font-medium text-slate-700">
-                            {task.id} · {task.subsystem}
-                          </span>
-                          <span className={PRIORITY_TEXT_CLASS[task.priority]}>
-                            {TASK_PRIORITY_LABELS[task.priority]}
-                          </span>
-                        </div>
-
-                        <h3 className="text-sm font-semibold text-slate-900 leading-snug">
-                          {task.title}
-                        </h3>
-
-                        <div className="flex items-center justify-between gap-2 pt-1 text-xs text-slate-500">
-                          <span className="truncate">{task.assignee}</span>
-                          <span className="font-mono tabular-nums shrink-0">
-                            {chkTotal > 0 ? `✓ ${chkDone}/${chkTotal} · ` : ''}
-                            {task.dueDate || '—'}
-                          </span>
-                        </div>
-
-                        {(linkedProg || task.linkedChannel) && (
-                          <div
-                            className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {linkedProg ? (
-                              <button
-                                type="button"
-                                onClick={() => onOpenProgram(linkedProg.id)}
-                                className="inline-flex items-center gap-1 text-sky-700 hover:underline truncate"
-                              >
-                                <Cpu className="w-3.5 h-3.5 shrink-0" />
-                                <span className="truncate">{linkedProg.name}</span>
-                              </button>
-                            ) : (
-                              <span />
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => onDiscussTask(task)}
-                              className="inline-flex items-center gap-1 text-slate-600 hover:text-sky-700 shrink-0"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                              Чат
-                            </button>
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            );
-          })}
-        </div>
+          <DragOverlay>
+            {activeDragTask ? (
+              <article className="bg-white border border-sky-400 rounded-md p-3.5 shadow-lg ring-2 ring-sky-500/20 space-y-2 cursor-grabbing">
+                <TaskCardContent
+                  task={activeDragTask}
+                  programs={programs}
+                  onOpenProgram={onOpenProgram}
+                  onDiscussTask={onDiscussTask}
+                  isOverlay
+                />
+              </article>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
       ) : viewMode === 'gantt' ? (
         /* 2. GANTT CHART */
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">

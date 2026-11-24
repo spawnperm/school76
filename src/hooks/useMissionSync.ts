@@ -9,6 +9,8 @@ import type {
   OnboardProgram,
   SocialPost,
   Subsystem,
+  TaskReorderPayload,
+  TaskStatus,
   TeamPresence,
   UserProfile,
   WsClientEvent,
@@ -153,6 +155,9 @@ export function useMissionSync(activeTab: string) {
               setTasks((prev) =>
                 prev.map((t) => (t.id === msg.payload.id ? msg.payload : t))
               );
+              break;
+            case 'task:reordered':
+              setTasks(msg.payload.tasks);
               break;
             case 'task:deleted':
               setTasks((prev) => prev.filter((t) => t.id !== msg.payload.id));
@@ -434,6 +439,39 @@ export function useMissionSync(activeTab: string) {
     [sendEvent]
   );
 
+  const reorderTask = useCallback(
+    (payload: TaskReorderPayload) => {
+      const { taskId, status, beforeTaskId, afterTaskId } = payload;
+      setTasks((prev) => {
+        const existing = prev.find((t) => t.id === taskId);
+        if (!existing) return prev;
+        const updated: CubeSatTask = {
+          ...existing,
+          status: status as TaskStatus,
+          progressPct: status === 'done' ? 100 : existing.progressPct,
+          updatedAt: new Date().toISOString(),
+        };
+        const remaining = prev.filter((t) => t.id !== taskId);
+        let insertIdx = -1;
+        if (beforeTaskId) {
+          insertIdx = remaining.findIndex((t) => t.id === beforeTaskId);
+        }
+        if (insertIdx === -1 && afterTaskId) {
+          const afterIdx = remaining.findIndex((t) => t.id === afterTaskId);
+          if (afterIdx !== -1) insertIdx = afterIdx + 1;
+        }
+        if (insertIdx === -1) {
+          remaining.push(updated);
+        } else {
+          remaining.splice(insertIdx, 0, updated);
+        }
+        return remaining;
+      });
+      sendEvent({ type: 'task:reorder', payload });
+    },
+    [sendEvent]
+  );
+
   const deleteTask = useCallback(
     (id: string) => {
       setTasks((prev) => prev.filter((t) => t.id !== id));
@@ -513,6 +551,7 @@ export function useMissionSync(activeTab: string) {
     commentPost,
     createTask,
     updateTask,
+    reorderTask,
     deleteTask,
     sendMessage,
     saveProgram,

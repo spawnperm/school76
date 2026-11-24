@@ -50,6 +50,8 @@ export interface ChatMessage {
   author: string;
   authorRole: string;
   text: string;
+  kind?: 'user' | 'system';
+  command?: string;
   taskRefId?: string;
   programRefId?: string;
   codeSnippet?: ChatCodeSnippet;
@@ -280,10 +282,18 @@ export interface MissionSnapshot {
   presence: TeamPresence[];
 }
 
+export interface TaskReorderPayload {
+  taskId: string;
+  status: TaskStatus;
+  beforeTaskId?: string | null;
+  afterTaskId?: string | null;
+}
+
 export type WsClientEvent =
   | { type: 'presence:join'; payload: { name: string; role: string; subsystem: Subsystem; activeTab: string } }
   | { type: 'task:create'; payload: Omit<CubeSatTask, 'id' | 'createdAt' | 'updatedAt'> & { id?: string } }
   | { type: 'task:update'; payload: { id: string; patch: Partial<Omit<CubeSatTask, 'id' | 'createdAt'>> } }
+  | { type: 'task:reorder'; payload: TaskReorderPayload }
   | { type: 'task:delete'; payload: { id: string } }
   | { type: 'chat:send'; payload: Omit<ChatMessage, 'id' | 'createdAt'> & { id?: string } }
   | { type: 'program:save'; payload: Omit<OnboardProgram, 'updatedAt' | 'versions'> & { saveNote?: string } }
@@ -295,6 +305,7 @@ export type WsServerEvent =
   | { type: 'presence:update'; payload: TeamPresence[] }
   | { type: 'task:created'; payload: CubeSatTask }
   | { type: 'task:updated'; payload: CubeSatTask }
+  | { type: 'task:reordered'; payload: { tasks: CubeSatTask[] } }
   | { type: 'task:deleted'; payload: { id: string } }
   | { type: 'chat:message'; payload: ChatMessage }
   | { type: 'program:saved'; payload: OnboardProgram }

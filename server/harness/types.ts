@@ -31,6 +31,13 @@ export interface HarnessStatePort {
   getOnlineCount: () => number;
   broadcast: (event: WsServerEvent) => void;
   syncTasksToForgejo: (projectId: string, summary: string, author: string) => void;
+  postgresQuery?: (sql: string) => Promise<unknown>;
+  postgresTables?: () => unknown[];
+  natsPublish?: (subject: string, payload: unknown, publisher?: string) => Promise<unknown>;
+  natsQuery?: (subject: string) => unknown[];
+  directusList?: (collection: string, search?: string) => { data: unknown[]; total: number };
+  difyRun?: (workflowId: string, query: string, projectId?: string) => Promise<unknown>;
+  traefikOverview?: () => unknown;
 }
 
 export interface StoreService {
@@ -84,7 +91,7 @@ export interface ToolsService {
 }
 
 export interface LlmService {
-  providerId: 'dsh-llm-gemini' | 'dsh-llm-deterministic';
+  providerId: 'dsh-llm-gemini' | 'dsh-llm-deterministic' | 'dsh-llm-dify';
   modelName: string;
   configured: boolean;
   planAndRun: (goal: string, projectId?: string) => Promise<HarnessAgentRunResult>;
