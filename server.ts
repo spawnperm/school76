@@ -60,6 +60,7 @@ import {
   rerunGitHubWorkflowRun,
   sanitizeGitHubRepo,
 } from './server/githubSync.ts';
+import { createServerHarness, registerHarnessRoutes } from './server/harness/runtime.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -815,9 +816,69 @@ async function startServer() {
     });
   }
 
+  const harnessRuntime = createServerHarness(__dirname, {
+    getTasks: () => state.tasks,
+    addTask: (input) => {
+      const id = `SAT-${state.nextTaskSeq++}`;
+      const now = new Date().toISOString();
+      const task: CubeSatTask = {
+        id,
+        projectId: clampStr(input.projectId, 64, 'school76-1u') || 'school76-1u',
+        title: clampStr(input.title, 140) || 'Новая задача',
+        description: clampStr(input.description, 2000),
+        subsystem: VALID_SUBSYSTEMS.has(input.subsystem as Subsystem)
+          ? (input.subsystem as Subsystem)
+          : 'OBC',
+        status: 'backlog',
+        priority: VALID_PRIORITIES.has(input.priority as TaskPriority)
+          ? (input.priority as TaskPriority)
+          : 'medium',
+        assignee: clampStr(input.assignee, 64, 'DeepSeek-Harness') || 'DeepSeek-Harness',
+        startDate: now.slice(0, 10),
+        progressPct: 0,
+        checklist: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.tasks.unshift(task);
+      saveState(state);
+      return task;
+    },
+    updateTaskStatus: (taskId, status, progressPct) => {
+      const idx = state.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) return null;
+      const updated: CubeSatTask = {
+        ...state.tasks[idx],
+        status,
+        progressPct:
+          progressPct !== undefined
+            ? Math.max(0, Math.min(100, progressPct))
+            : status === 'done'
+              ? 100
+              : state.tasks[idx].progressPct,
+        updatedAt: new Date().toISOString(),
+      };
+      state.tasks[idx] = updated;
+      saveState(state);
+      return updated;
+    },
+    getProjects: () => state.projects,
+    getPrograms: () => state.programs,
+    getUsersCount: () => state.users.length,
+    getOnlineCount: () => clients.size,
+    broadcast,
+    syncTasksToForgejo,
+  });
+
+  registerHarnessRoutes(app, harnessRuntime);
+
   app.get('/api/health', (_req, res) => {
+    const h = harnessRuntime.getSnapshot();
     res.json({
       ok: true,
+      engine: h.engine,
+      profile: h.activeProfileId,
+      activePlugins: h.metrics.activePlugins,
       tasks: state.tasks.length,
       programs: state.programs.length,
       projects: state.projects.length,

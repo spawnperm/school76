@@ -16,18 +16,10 @@ import { ProjectsWorkspace } from './components/ProjectsWorkspace.tsx';
 import { CiActionsPanel } from './components/CiActionsPanel.tsx';
 import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
 import { MissionStatusBadge } from './components/MissionStatusBadge.tsx';
+import { HarnessConsole } from './components/HarnessConsole.tsx';
+import { useHarnessRuntime } from './hooks/useHarnessRuntime.ts';
+import type { WorkspaceTab } from './harness/frontendRegistry.ts';
 import type { ChatChannelId, CommunityProject, CubeSatTask, Subsystem } from './types/cubesat.ts';
-
-type WorkspaceTab = 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat' | 'cabinet';
-
-const NAV_ITEMS: { id: Exclude<WorkspaceTab, 'cabinet'>; label: string }[] = [
-  { id: 'projects', label: 'Проекты' },
-  { id: 'tasks', label: 'Задачи' },
-  { id: 'wiki', label: 'База знаний' },
-  { id: 'mblock', label: 'mBlock ПО' },
-  { id: 'ci', label: 'CI/CD' },
-  { id: 'chat', label: 'Техчат' },
-];
 
 const FALLBACK_PROJECT: CommunityProject = {
   id: 'school76-1u',
@@ -44,7 +36,7 @@ const FALLBACK_PROJECT: CommunityProject = {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('projects');
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('harness');
   const [activeProjectId, setActiveProjectId] = useState<string>('school76-1u');
   const [selectedProgramId, setSelectedProgramId] = useState<string>('prog-nominal-beacon');
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
@@ -56,6 +48,8 @@ export default function App() {
   const [initialTaskSubsystem, setInitialTaskSubsystem] = useState<Subsystem | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showGitHubModal, setShowGitHubModal] = useState(false);
+
+  const harness = useHarnessRuntime();
 
   const {
     authFetch,
@@ -97,6 +91,12 @@ export default function App() {
     () => projects.find((p) => p.id === activeProjectId) || projects[0] || FALLBACK_PROJECT,
     [projects, activeProjectId]
   );
+
+  const resolvedTab: WorkspaceTab = useMemo(() => {
+    if (activeTab === 'cabinet' || activeTab === 'harness') return activeTab;
+    const mounted = harness.navSlots.some((s) => s.tab === activeTab);
+    return mounted ? activeTab : 'harness';
+  }, [activeTab, harness.navSlots]);
 
   const openProgramInMBlock = (programId: string) => {
     setSelectedProgramId(programId);
@@ -152,32 +152,32 @@ export default function App() {
       <header className="sticky top-0 z-30 h-14 bg-white border-b border-slate-200 px-6 flex items-center justify-between gap-6">
         {/* Zone 1: Single text element wordmark */}
         <a
-          href="#projects"
+          href="#harness"
           onClick={(e) => {
             e.preventDefault();
-            setActiveTab('projects');
+            setActiveTab('harness');
           }}
           className="font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
         >
           school76
         </a>
 
-        {/* Zone 2: 5 clean single-line navigation links */}
+        {/* Zone 2: Clean single-line navigation links driven by mounted Cordis UI plugins */}
         <nav className="flex items-center gap-6 overflow-x-auto">
-          {NAV_ITEMS.map((item) => {
-            const isActive = activeTab === item.id;
+          {harness.navSlots.map((slot) => {
+            const isActive = resolvedTab === slot.tab;
             return (
               <button
-                key={item.id}
+                key={slot.pluginId}
                 type="button"
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => setActiveTab(slot.tab)}
                 className={`py-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                   isActive
                     ? 'border-sky-600 text-slate-900'
                     : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'
                 }`}
               >
-                {item.label}
+                {slot.label}
               </button>
             );
           })}
@@ -202,14 +202,14 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              if (!currentUser && activeTab === 'cabinet') {
+              if (!currentUser && resolvedTab === 'cabinet') {
                 setShowAuthModal(true);
               } else {
                 setActiveTab('cabinet');
               }
             }}
             className={`px-4 py-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 max-w-[190px] truncate ${
-              activeTab === 'cabinet'
+              resolvedTab === 'cabinet'
                 ? 'bg-sky-600 text-white'
                 : 'bg-slate-900 text-white hover:bg-slate-800'
             }`}
@@ -221,7 +221,26 @@ export default function App() {
 
       {/* Active Workspace */}
       <div className="flex-1 min-h-0">
-        {activeTab === 'projects' && (
+        {resolvedTab === 'harness' && (
+          <HarnessConsole
+            snapshot={harness.snapshot}
+            agentHistory={harness.agentHistory}
+            activeProjectId={activeProject.id}
+            activeProjectName={activeProject.name}
+            loading={harness.loading}
+            busyAction={harness.busyAction}
+            error={harness.error}
+            onRefresh={harness.refresh}
+            onActivateProfile={harness.activateProfile}
+            onTogglePlugin={harness.togglePlugin}
+            onSwitchSeamProvider={harness.switchSeamProvider}
+            onExecuteTool={harness.executeTool}
+            onRunAgentGoal={harness.runAgentGoal}
+            onOpenSlot={(tab) => setActiveTab(tab)}
+          />
+        )}
+
+        {resolvedTab === 'projects' && (
           <ProjectsWorkspace
             projects={projects}
             activeProjectId={activeProject.id}
@@ -264,7 +283,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'tasks' && (
+        {resolvedTab === 'tasks' && (
           <TaskBoard
             projectId={activeProject.id}
             projectName={activeProject.name}
@@ -284,7 +303,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'wiki' && (
+        {resolvedTab === 'wiki' && (
           <WikiKnowledgeBase
             project={activeProject}
             tasks={tasks}
@@ -299,7 +318,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'mblock' && (
+        {resolvedTab === 'mblock' && (
           <MBlockStudio
             projectId={activeProject.id}
             programs={programs}
@@ -313,7 +332,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'ci' && (
+        {resolvedTab === 'ci' && (
           <div className="max-w-7xl mx-auto px-6 py-6 space-y-5">
             <div className="bg-white border border-slate-200 rounded-lg px-5 py-4 flex flex-wrap items-center justify-between gap-4">
               <div className="min-w-0">
@@ -347,7 +366,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'chat' && (
+        {resolvedTab === 'chat' && (
           <EngineeringChat
             projectId={activeProject.id}
             projectName={activeProject.name}
@@ -371,7 +390,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'cabinet' && (
+        {resolvedTab === 'cabinet' && (
           <CabinetView
             currentUser={currentUser}
             users={users}

@@ -1,0 +1,47 @@
+# DeepSeek-Harness (DSH) Composition Profile — school76 1U CubeSat Platform
+# Powered by Cordis "everything is a plugin" architecture
+
+engine: deepseek-harness
+runtime: cordis-v1
+defaultProfile: cubesat-full
+
+seams:
+  dsh-store:
+    description: Mission state persistence (tasks, projects, programs, users)
+    providers:
+      - dsh-store-json
+  dsh-forge:
+    description: Git repository, Markdown llm-wiki, and commit history
+    providers:
+      - dsh-forge-forgejo
+  dsh-s3:
+    description: Binary artifacts and telemetry snapshots object storage
+    providers:
+      - dsh-s3-garage
+  dsh-ci:
+    description: CI/CD workflow runners and pre-push checks
+    providers:
+      - dsh-ci-hybrid
+  dsh-realtime:
+    description: Real-time engineering channels and online presence
+    providers:
+      - dsh-realtime-ws
+  dsh-llm:
+    description: Reasoning model adapter for the harness agent loop
+    providers:
+      - dsh-llm-gemini
+      - dsh-llm-deterministic
+  dsh-tools:
+    description: Model-callable tool registry over live CubeSat subsystems
+    providers:
+      - dsh-tools-cubesat
+
+profiles:
+  cubesat-full:
+    bundles: [dsh-base, dsh-cubesat, dsh-devops, dsh-collab]
+  firmware-lab:
+    bundles: [dsh-base, dsh-cubesat]
+  headless-ci:
+    bundles: [dsh-base, dsh-devops]
+  sdk-minimal:
+    bundles: [dsh-base]
