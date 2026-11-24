@@ -75,6 +75,8 @@ export default function App() {
     createProject,
     toggleJoinProject,
     generateProjectDescription,
+    generateProjectReadme,
+    uploadProjectReadme,
     createPost,
     toggleLikePost,
     commentPost,
@@ -226,6 +228,8 @@ export default function App() {
             }}
             onOpenTask={openTaskInBoard}
             onGenerateDescription={generateProjectDescription}
+            onGenerateReadme={generateProjectReadme}
+            onUploadReadme={uploadProjectReadme}
           />
         )}
 
@@ -263,6 +267,7 @@ export default function App() {
 
         {activeTab === 'mblock' && (
           <MBlockStudio
+            projectId={activeProject.id}
             programs={programs}
             selectedProgramId={selectedProgramId}
             onSelectProgram={setSelectedProgramId}

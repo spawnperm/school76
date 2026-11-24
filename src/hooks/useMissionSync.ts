@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   CommunityProject,
   CubeSatTask,
+  ForgejoCommit,
   MissionSnapshot,
   OnboardProgram,
   SocialPost,
@@ -322,6 +323,41 @@ export function useMissionSync(activeTab: string) {
     [authFetch]
   );
 
+  const generateProjectReadme = useCallback(
+    async (projectId: string) => {
+      const data = await authFetch(
+        `/api/projects/${encodeURIComponent(projectId)}/generate-readme`,
+        { method: 'POST' }
+      );
+      return data as {
+        readme: string;
+        filename: string;
+        repo: string;
+        generatedAt: string;
+      };
+    },
+    [authFetch]
+  );
+
+  const uploadProjectReadme = useCallback(
+    async (projectId: string, content: string, commitMessage?: string) => {
+      const data = await authFetch(
+        `/api/projects/${encodeURIComponent(projectId)}/readme`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ content, commitMessage }),
+        }
+      );
+      return data as {
+        ok: boolean;
+        path: string;
+        repo: string;
+        commit: ForgejoCommit;
+      };
+    },
+    [authFetch]
+  );
+
   const createPost = useCallback(
     async (payload: { text: string; projectId?: string; mediaUrls?: string[] }) => {
       const data = await authFetch('/api/posts', {
@@ -438,6 +474,8 @@ export function useMissionSync(activeTab: string) {
     createProject,
     toggleJoinProject,
     generateProjectDescription,
+    generateProjectReadme,
+    uploadProjectReadme,
     createPost,
     toggleLikePost,
     commentPost,

@@ -23,6 +23,7 @@ import type {
   ChatChannelId,
   CommunityProject,
   CubeSatTask,
+  ForgejoCommit,
   GarageObjectMeta,
   OnboardProgram,
   SocialPost,
@@ -748,6 +749,22 @@ interface ProjectsViewProps {
   onOpenSubsystemMBlock: (subsystem: Subsystem) => void;
   onOpenTask: (taskId: string) => void;
   onGenerateDescription: (projectId: string) => Promise<string>;
+  onGenerateReadme: (projectId: string) => Promise<{
+    readme: string;
+    filename: string;
+    repo: string;
+    generatedAt: string;
+  }>;
+  onUploadReadme: (
+    projectId: string,
+    content: string,
+    commitMessage?: string
+  ) => Promise<{
+    ok: boolean;
+    path: string;
+    repo: string;
+    commit: ForgejoCommit;
+  }>;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = ({
@@ -776,6 +793,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onOpenSubsystemMBlock,
   onOpenTask,
   onGenerateDescription,
+  onGenerateReadme,
+  onUploadReadme,
 }) => {
   const [communityTab, setCommunityTab] = useState<'wall' | 'members' | 'bench'>('wall');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -866,6 +885,24 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     }
   };
 
+  const handleGenerateReadme = async () => {
+    if (!activeProject) return null;
+    if (!currentUser) {
+      onRequireAuth();
+      return null;
+    }
+    return onGenerateReadme(activeProject.id);
+  };
+
+  const handleUploadReadme = async (content: string, commitMessage?: string) => {
+    if (!activeProject) throw new Error('Проект не выбран');
+    if (!currentUser) {
+      onRequireAuth();
+      throw new Error('Требуется вход в личный кабинет');
+    }
+    return onUploadReadme(activeProject.id, content, commitMessage);
+  };
+
   if (!activeProject) {
     return (
       <div className="max-w-[1440px] mx-auto px-6 py-10 text-sm text-slate-500">
@@ -926,9 +963,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         onNavigateTab={onNavigateTab}
         onOpenGitHubSync={onOpenGitHubSync}
         onOpenTask={onOpenTask}
+        onOpenWikiDoc={onOpenWikiDoc}
         onGenerateDescription={handleGenerateDescription}
         generatingDescription={generatingDescription}
         descriptionError={descriptionError}
+        onGenerateReadme={handleGenerateReadme}
+        onUploadReadme={handleUploadReadme}
       />
 
       {/* Interactive 3D CubeSat Twin colored by subsystem task readiness */}

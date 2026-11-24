@@ -28,10 +28,12 @@ import {
   deleteForgejoFile,
   ensureForgejoRepo,
   getForgejoCommits,
+  hasForgejoFile,
   ingestSourceToWiki,
   lintForgejoWiki,
   listForgejoTree,
   readForgejoFile,
+  recordProjectChangeToForgejo,
   writeForgejoFile,
 } from './server/forgejoStore.ts';
 import {
@@ -562,9 +564,184 @@ function sanitizeMediaUrl(val: unknown): string | null {
 async function startServer() {
   const state = loadState();
   ensureGarageBucket('school76-media');
+
+  function resolveProjectForSync(projectId?: string): CommunityProject | undefined {
+    if (projectId) {
+      const exact = state.projects.find((p) => p.id === projectId);
+      if (exact) return exact;
+    }
+    return state.projects.find((p) => p.id === 'school76-1u') || state.projects[0];
+  }
+
+  function syncOverviewToForgejo(
+    project: CommunityProject,
+    logTag: 'PROJECT' | 'TEAM' | 'AI',
+    summary: string,
+    author: string
+  ) {
+    const members = state.users.filter((u) => project.memberIds.includes(u.id));
+    const memberLines = members
+      .map((m) => `- **${m.displayName}** (@${m.username}) — ${m.role} · \`${m.subsystem}\``)
+      .join('\n');
+    const md = `# Проект «${project.name}»\n\n- **Идентификатор:** \`${project.id}\`\n- **Категория:** ${project.category}\n- **Репозиторий Forgejo:** \`school76/${project.forgejoRepo}\`\n- **Бакет Garage S3:** \`${project.s3Bucket}\`\n- **Теги:** ${project.tags.join(', ') || 'нет'}\n- **Обновлено:** ${new Date().toISOString()}\n\n## Описание\n\n${project.description || 'Описание пока не задано.'}\n\n## Команда разработки (${members.length})\n\n${memberLines || '- Участников пока нет'}\n`;
+    try {
+      recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: 'project/overview.md',
+        content: md,
+        commitMessage: `[${logTag}] ${summary}`,
+        logTag,
+        logSummary: summary,
+        author,
+        sectionLabel: 'Паспорт проекта и состав команды',
+      });
+    } catch (err) {
+      console.warn('Forgejo overview sync failed:', err);
+    }
+  }
+
+  function syncTasksToForgejo(projectId: string | undefined, summary: string, author: string) {
+    const project = resolveProjectForSync(projectId);
+    if (!project) return;
+    const projTasks = state.tasks.filter(
+      (t) => (t.projectId || 'school76-1u') === project.id
+    );
+    const done = projTasks.filter((t) => t.status === 'done').length;
+    const pct = projTasks.length > 0 ? Math.round((done / projTasks.length) * 100) : 0;
+    const rows = projTasks
+      .map(
+        (t) =>
+          `| \`${t.id}\` | \`${t.subsystem}\` | ${t.status} | ${t.priority} | ${
+            t.status === 'done' ? 100 : t.progressPct ?? 0
+          }% | ${t.assignee} | ${t.dueDate || '—'} | ${t.title.replace(/\|/g, '/')} |`
+      )
+      .join('\n');
+    const md = `# Задачи проекта «${project.name}»\n\n- **Всего задач:** ${projTasks.length}\n- **Выполнено:** ${done} (${pct}%)\n- **Обновлено:** ${new Date().toISOString()}\n\n| ID | Подсистема | Статус | Приоритет | Прогресс | Исполнитель | Срок | Задача |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n${rows || '| — | — | — | — | — | — | — | Задач пока нет |'}\n`;
+    try {
+      recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: 'project/tasks.md',
+        content: md,
+        commitMessage: `[TASK] ${summary}`,
+        logTag: 'TASK',
+        logSummary: summary,
+        author,
+        sectionLabel: 'Реестр задач и прогресс подсистем',
+      });
+    } catch (err) {
+      console.warn('Forgejo tasks sync failed:', err);
+    }
+  }
+
+  function syncProgramsToForgejo(projectId: string | undefined, summary: string, author: string) {
+    const project = resolveProjectForSync(projectId);
+    if (!project) return;
+    const projPrograms = state.programs.filter(
+      (p) => (p.projectId || 'school76-1u') === project.id
+    );
+    const sections = projPrograms
+      .map((p) => {
+        const latestVer = p.versions?.[0];
+        return `## ${p.name} (\`${p.id}\`)\n\n- **Подсистема:** \`${p.subsystem}\`\n- **Плата:** ${p.targetBoard}\n- **Автор:** ${p.author}\n- **Версий:** ${p.versions?.length || 1}\n- **Последняя заметка:** ${latestVer?.note || '—'}\n- **Обновлено:** ${p.updatedAt}\n\n${p.description}\n`;
+      })
+      .join('\n');
+    const md = `# Бортовое ПО mBlock проекта «${project.name}»\n\nВсего программ: ${projPrograms.length}\n\n${sections || 'Программы ещё не добавлены.'}`;
+    try {
+      recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: 'project/programs.md',
+        content: md,
+        commitMessage: `[MBLOCK] ${summary}`,
+        logTag: 'MBLOCK',
+        logSummary: summary,
+        author,
+        sectionLabel: 'Бортовые программы mBlock и версии',
+      });
+    } catch (err) {
+      console.warn('Forgejo programs sync failed:', err);
+    }
+  }
+
+  function syncWallToForgejo(projectId: string | undefined, summary: string, author: string) {
+    const project = resolveProjectForSync(projectId);
+    if (!project) return;
+    const projPosts = state.posts.filter((p) => p.projectId === project.id).slice(0, 40);
+    const blocks = projPosts
+      .map((p) => {
+        const comments = p.comments
+          .map((c) => `  - **${c.authorName}**: ${c.text}`)
+          .join('\n');
+        return `### ${p.authorName} (${p.authorHandle}) · ${p.createdAt.slice(0, 16).replace('T', ' ')}\n\n${p.text || '_Медиа-вложение_'}\n\nЛайков: ${p.likes.length} · Комментариев: ${p.comments.length}${comments ? `\n\n${comments}` : ''}\n`;
+      })
+      .join('\n---\n\n');
+    const md = `# Стена сообщества «${project.name}»\n\n${blocks || 'Записей на стене пока нет.'}`;
+    try {
+      recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: 'project/wall.md',
+        content: md,
+        commitMessage: `[WALL] ${summary}`,
+        logTag: 'WALL',
+        logSummary: summary,
+        author,
+        sectionLabel: 'Лента и обсуждения на стене проекта',
+      });
+    } catch (err) {
+      console.warn('Forgejo wall sync failed:', err);
+    }
+  }
+
+  function syncChatToForgejo(projectId: string | undefined, summary: string, author: string) {
+    const project = resolveProjectForSync(projectId);
+    if (!project) return;
+    const projMsgs = state.messages
+      .filter((m) => (m.projectId || 'school76-1u') === project.id)
+      .slice(-60);
+    const lines = projMsgs
+      .map((m) => {
+        const refs = [
+          m.taskRefId ? `задача \`${m.taskRefId}\`` : '',
+          m.programRefId ? `ПО \`${m.programRefId}\`` : '',
+        ]
+          .filter(Boolean)
+          .join(', ');
+        const snippet = m.codeSnippet
+          ? `\n\n\`\`\`${m.codeSnippet.lang}\n${m.codeSnippet.code}\n\`\`\``
+          : '';
+        return `- **[#${m.channel}] ${m.author}** (${m.createdAt.slice(0, 16).replace('T', ' ')}${refs ? ` · ${refs}` : ''}): ${m.text}${snippet}`;
+      })
+      .join('\n');
+    const md = `# Журнал техчата «${project.name}»\n\n${lines || 'Сообщений пока нет.'}\n`;
+    try {
+      recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: 'project/chat.md',
+        content: md,
+        commitMessage: `[CHAT] ${summary}`,
+        logTag: 'CHAT',
+        logSummary: summary,
+        author,
+        sectionLabel: 'Архив технического чата команды',
+      });
+    } catch (err) {
+      console.warn('Forgejo chat sync failed:', err);
+    }
+  }
+
   for (const proj of state.projects) {
     ensureForgejoRepo(proj.forgejoRepo, proj.name);
     ensureGarageBucket(proj.s3Bucket);
+    if (!hasForgejoFile(proj.forgejoRepo, 'project/overview.md')) {
+      syncOverviewToForgejo(proj, 'PROJECT', `Инициализация рабочего пространства «${proj.name}»`, 'Система school76');
+      syncTasksToForgejo(proj.id, `Начальная синхронизация задач проекта «${proj.name}»`, 'Система school76');
+      syncProgramsToForgejo(proj.id, `Начальная синхронизация программ ПО «${proj.name}»`, 'Система school76');
+      syncWallToForgejo(proj.id, `Начальная синхронизация стены «${proj.name}»`, 'Система school76');
+    }
   }
 
   const app = express();
@@ -813,6 +990,12 @@ async function startServer() {
 
     state.projects.unshift(project);
     saveState(state);
+    syncOverviewToForgejo(
+      project,
+      'PROJECT',
+      `Создан проект «${project.name}» (${project.category})`,
+      currentUser.displayName
+    );
     broadcastSocialSync();
     res.status(201).json({ project });
   });
@@ -839,9 +1022,50 @@ async function startServer() {
       }
     }
     saveState(state);
+    syncOverviewToForgejo(
+      project,
+      'TEAM',
+      isMember
+        ? `Участник ${currentUser.displayName} покинул команду`
+        : `Участник ${currentUser.displayName} вступил в команду`,
+      currentUser.displayName
+    );
     broadcastSocialSync();
     res.json({ joined: !isMember, project });
   });
+
+  async function generateGeminiTextWithRetry(
+    apiKey: string,
+    contents: string,
+    systemInstruction: string
+  ): Promise<string> {
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+    const models = ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+    let lastErr: unknown = null;
+
+    for (let attempt = 0; attempt < models.length; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: models[attempt],
+          contents,
+          config: { systemInstruction },
+        });
+        return (response.text ?? '').trim();
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTransient = /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand/i.test(msg);
+        if (!isTransient || attempt === models.length - 1) {
+          throw err;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+      }
+    }
+    throw lastErr;
+  }
 
   app.post('/api/projects/:id/generate-description', requireAuth, async (req, res) => {
     const project = state.projects.find((p) => p.id === req.params.id);
@@ -926,20 +1150,12 @@ ${subsystemLines || '- Задачи по подсистемам ещё не до
 ${taskLines || '- Задач пока нет'}`;
 
     try {
-      const ai = new GoogleGenAI({
+      const rawText = await generateGeminiTextWithRetry(
         apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      });
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: promptText,
-        config: {
-          systemInstruction:
-            'Ты главный системный инженер космических проектов school76. Напиши лаконичное, профессиональное описание проекта на русском языке (3–4 предложения, не длиннее 700 символов) в виде связного абзаца без markdown-заголовков и списков. Опирайся только на переданные задачи и метрики прогресса: отрази назначение проекта, текущую общую готовность, ключевые подсистемы в работе и ближайшие задачи.',
-        },
-      });
-
-      const generated = (response.text ?? '').replace(/\s+/g, ' ').trim();
+        promptText,
+        'Ты главный системный инженер космических проектов school76. Напиши лаконичное, профессиональное описание проекта на русском языке (3–4 предложения, не длиннее 700 символов) в виде связного абзаца без markdown-заголовков и списков. Опирайся только на переданные задачи и метрики прогресса: отрази назначение проекта, текущую общую готовность, ключевые подсистемы в работе и ближайшие задачи.'
+      );
+      const generated = rawText.replace(/\s+/g, ' ').trim();
       if (!generated) {
         res.status(502).json({ error: 'Модель вернула пустое описание проекта' });
         return;
@@ -947,12 +1163,203 @@ ${taskLines || '- Задач пока нет'}`;
 
       project.description = clampStr(generated, 800);
       saveState(state);
+      const actor = (req as express.Request & { currentUser: StoredUser }).currentUser;
+      syncOverviewToForgejo(
+        project,
+        'AI',
+        `Обновлено описание проекта с помощью ИИ`,
+        actor.displayName
+      );
       broadcastSocialSync();
       res.json({ description: project.description, project });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Ошибка обращения к Gemini API';
       console.error('AI project description error:', msg);
       res.status(502).json({ error: `Ошибка генерации ИИ: ${msg.slice(0, 200)}` });
+    }
+  });
+
+  app.post('/api/projects/:id/generate-readme', requireAuth, async (req, res) => {
+    const project = state.projects.find((p) => p.id === req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Проект не найден' });
+      return;
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+      res.status(503).json({
+        error: 'GEMINI_API_KEY не настроен на сервере. Добавьте ключ в Settings > Secrets.',
+      });
+      return;
+    }
+
+    const projectTasks = state.tasks.filter(
+      (t) => (t.projectId || 'school76-1u') === project.id
+    );
+    const total = projectTasks.length;
+    const done = projectTasks.filter((t) => t.status === 'done').length;
+    const review = projectTasks.filter((t) => t.status === 'review').length;
+    const inProgress = projectTasks.filter((t) => t.status === 'in_progress').length;
+    const backlog = projectTasks.filter((t) => t.status === 'backlog').length;
+    const overallPct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+    const subsystemSummary = (['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'] as Subsystem[])
+      .map((sub) => {
+        const subTasks = projectTasks.filter((t) => t.subsystem === sub);
+        if (subTasks.length === 0) return null;
+        const subDone = subTasks.filter((t) => t.status === 'done').length;
+        const subActive = subTasks.filter((t) => t.status === 'in_progress' || t.status === 'review').length;
+        const subPct = Math.round((subDone / subTasks.length) * 100);
+        return `- ${sub}: ${subDone}/${subTasks.length} готово (${subPct}%), в работе/проверке: ${subActive}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    const taskDetails = projectTasks
+      .slice(0, 30)
+      .map(
+        (t) =>
+          `- [${t.id}] (${t.subsystem}, ${t.status}, приоритет: ${t.priority}, прогресс: ${
+            t.status === 'done' ? 100 : t.progressPct ?? 0
+          }%, срок: ${t.dueDate || '—'}, исполнитель: ${t.assignee}): ${t.title}`
+      )
+      .join('\n');
+
+    const members = state.users.filter((u) => project.memberIds.includes(u.id));
+    const memberLines = members
+      .map((m) => `- ${m.displayName} (@${m.username}) — ${m.role} [${m.subsystem}]`)
+      .join('\n');
+
+    const projectPrograms = state.programs.filter(
+      (p) => (p.projectId || 'school76-1u') === project.id
+    );
+    const programLines = projectPrograms
+      .map(
+        (p) =>
+          `- ${p.name} (${p.subsystem}, плата: ${p.targetBoard}, версий: ${
+            p.versions?.length || 1
+          }): ${p.description}`
+      )
+      .join('\n');
+
+    let repoTreeText = 'Файлы не проиндексированы';
+    let recentCommitsText = 'Коммитов пока нет';
+    try {
+      const tree = listForgejoTree(project.forgejoRepo);
+      if (tree.length > 0) {
+        repoTreeText = tree.map((f) => `- ${f.path} (${f.size} B)`).join('\n');
+      }
+      const commits = getForgejoCommits(project.forgejoRepo).slice(0, 8);
+      if (commits.length > 0) {
+        recentCommitsText = commits
+          .map((c) => `- ${c.sha.slice(0, 7)} | ${c.timestamp.slice(0, 16)} | ${c.author}: ${c.message}`)
+          .join('\n');
+      }
+    } catch {
+      // Ignore if Forgejo tree is not yet initialized
+    }
+
+    const promptText = `Сформируй полноценный, структурированный файл README.md на русском языке для публикации в корневом каталоге репозитория Forgejo \`school76/${project.forgejoRepo}\`.
+
+Данные проекта:
+- Название: ${project.name}
+- Идентификатор / slug: ${project.id}
+- Категория: ${project.category}
+- Теги: ${project.tags.join(', ') || 'нет'}
+- Описание: ${project.description || 'Описание не заполнено'}
+- Репозиторий Forgejo: school76/${project.forgejoRepo}
+- Бакет медиа Garage S3: ${project.s3Bucket}
+- Дата формирования: ${new Date().toISOString().slice(0, 10)}
+
+Текущий статус выполнения задач:
+- Всего задач: ${total}
+- Выполнено: ${done} (${overallPct}%)
+- На проверке: ${review}
+- В работе: ${inProgress}
+- В бэклоге: ${backlog}
+
+Прогресс по подсистемам:
+${subsystemSummary || '- Задачи по подсистемам пока не добавлены'}
+
+Актуальные задачи:
+${taskDetails || '- Задачи пока не созданы'}
+
+Программы бортового ПО (mBlock):
+${programLines || '- Программы mBlock пока не добавлены'}
+
+Команда разработки (${members.length} чел.):
+${memberLines || '- Участников пока нет'}
+
+Текущие файлы в репозитории Forgejo (school76/${project.forgejoRepo}):
+${repoTreeText}
+
+Последние коммиты Forgejo:
+${recentCommitsText}`;
+
+    try {
+      let readme = await generateGeminiTextWithRetry(
+        apiKey,
+        promptText,
+        'Ты главный системный инженер и технический писатель платформы school76. Сгенерируй готовый к коммиту в Forgejo файл README.md в чистом Markdown (без оборачивания всего ответа в тройные кавычки ```markdown). Обязательно включи разделы: 1) Заголовок, краткое описание и сводный статус готовности; 2) Таблица текущего статуса и прогресса по подсистемам; 3) Структура репозитория Forgejo (в виде дерева каталогов и пояснений к реальным файлам и блокам); 4) Бортовое ПО и активные задачи; 5) Состав команды и порядок работы с репозиторием Forgejo. Используй обычные Markdown-ссылки и таблицы (не используй синтаксис [[wikilink]]). Опирайся строго на переданные данные.'
+      );
+      readme = readme.replace(/^```(?:markdown|md)?\s*\n/i, '').replace(/\n```\s*$/i, '').trim();
+
+      if (!readme) {
+        res.status(502).json({ error: 'Модель вернула пустой файл README.md' });
+        return;
+      }
+
+      res.json({
+        readme: `${readme}\n`,
+        filename: 'README.md',
+        repo: project.forgejoRepo,
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ошибка обращения к Gemini API';
+      console.error('AI project README error:', msg);
+      res.status(502).json({ error: `Ошибка генерации README.md: ${msg.slice(0, 200)}` });
+    }
+  });
+
+  app.post('/api/projects/:id/readme', requireAuth, (req, res) => {
+    const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
+    const project = state.projects.find((p) => p.id === req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Проект не найден' });
+      return;
+    }
+
+    const content = typeof req.body?.content === 'string' ? req.body.content.slice(0, 100000) : '';
+    if (!content.trim()) {
+      res.status(400).json({ error: 'Содержимое README.md не может быть пустым' });
+      return;
+    }
+
+    const commitMessage = clampStr(
+      req.body?.commitMessage,
+      160,
+      `[AI] Обновлён README.md проекта «${project.name}»`
+    );
+
+    try {
+      const commit = recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: 'README.md',
+        content,
+        commitMessage,
+        logTag: 'AI',
+        logSummary: `Опубликован README.md со структурой и статусом проекта «${project.name}»`,
+        author: currentUser.displayName,
+        sectionLabel: 'Главное описание репозитория (README.md)',
+      });
+      res.json({ ok: true, path: 'README.md', repo: project.forgejoRepo, commit });
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Не удалось сохранить README.md в Forgejo',
+      });
     }
   });
 
@@ -988,6 +1395,13 @@ ${taskLines || '- Задач пока нет'}`;
     state.posts.unshift(post);
     if (state.posts.length > 200) state.posts = state.posts.slice(0, 200);
     saveState(state);
+    if (post.projectId) {
+      syncWallToForgejo(
+        post.projectId,
+        `Новая запись на стене: ${(post.text || 'медиа-вложение').slice(0, 72)}`,
+        currentUser.displayName
+      );
+    }
     broadcastSocialSync();
     res.status(201).json({ post });
   });
@@ -1028,6 +1442,13 @@ ${taskLines || '- Задач пока нет'}`;
       createdAt: new Date().toISOString(),
     });
     saveState(state);
+    if (post.projectId) {
+      syncWallToForgejo(
+        post.projectId,
+        `Комментарий к записи: ${text.slice(0, 72)}`,
+        currentUser.displayName
+      );
+    }
     broadcastSocialSync();
     res.status(201).json({ post });
   });
@@ -1315,6 +1736,11 @@ ${taskLines || '- Задач пока нет'}`;
             };
             state.tasks.unshift(task);
             saveState(state);
+            syncTasksToForgejo(
+              task.projectId,
+              `Создана задача ${task.id}: ${task.title}`,
+              clients.get(ws)?.name || task.assignee
+            );
             broadcast({ type: 'task:created', payload: task });
             break;
           }
@@ -1367,16 +1793,29 @@ ${taskLines || '- Задач пока нет'}`;
             };
             state.tasks[idx] = updated;
             saveState(state);
+            syncTasksToForgejo(
+              updated.projectId,
+              `Обновлена задача ${updated.id} (${updated.status}, ${updated.progressPct ?? 0}%)`,
+              clients.get(ws)?.name || updated.assignee
+            );
             broadcast({ type: 'task:updated', payload: updated });
             break;
           }
 
           case 'task:delete': {
             const { id } = msg.payload;
+            const deletedTask = state.tasks.find((t) => t.id === id);
             const before = state.tasks.length;
             state.tasks = state.tasks.filter((t) => t.id !== id);
             if (state.tasks.length !== before) {
               saveState(state);
+              if (deletedTask) {
+                syncTasksToForgejo(
+                  deletedTask.projectId,
+                  `Удалена задача ${deletedTask.id}: ${deletedTask.title}`,
+                  clients.get(ws)?.name || deletedTask.assignee
+                );
+              }
               broadcast({ type: 'task:deleted', payload: { id } });
             }
             break;
@@ -1414,6 +1853,11 @@ ${taskLines || '- Задач пока нет'}`;
               state.messages = state.messages.slice(-400);
             }
             saveState(state);
+            syncChatToForgejo(
+              message.projectId,
+              `Сообщение в #${message.channel}: ${message.text.slice(0, 72)}`,
+              message.author
+            );
             broadcast({ type: 'chat:message', payload: message });
             break;
           }
@@ -1469,6 +1913,11 @@ ${taskLines || '- Задач пока нет'}`;
               state.programs.unshift(saved);
             }
             saveState(state);
+            syncProgramsToForgejo(
+              saved.projectId,
+              `Сохранена программа «${saved.name}» (${newVersion.note})`,
+              saved.author
+            );
             broadcast({ type: 'program:saved', payload: saved });
             break;
           }
@@ -1491,6 +1940,11 @@ ${taskLines || '- Задач пока нет'}`;
             };
             state.programs[progIdx] = updatedProg;
             saveState(state);
+            syncProgramsToForgejo(
+              updatedProg.projectId,
+              `Обновлена заметка версии «${updatedProg.name}»: ${clampStr(note, 80)}`,
+              clients.get(ws)?.name || updatedProg.author
+            );
             broadcast({ type: 'program:saved', payload: updatedProg });
             break;
           }
@@ -1498,10 +1952,18 @@ ${taskLines || '- Задач пока нет'}`;
           case 'program:delete': {
             const { id } = msg.payload;
             if (state.programs.length <= 1) return;
+            const deletedProg = state.programs.find((item) => item.id === id);
             const before = state.programs.length;
             state.programs = state.programs.filter((item) => item.id !== id);
             if (state.programs.length !== before) {
               saveState(state);
+              if (deletedProg) {
+                syncProgramsToForgejo(
+                  deletedProg.projectId,
+                  `Удалена программа «${deletedProg.name}»`,
+                  clients.get(ws)?.name || deletedProg.author
+                );
+              }
               broadcast({ type: 'program:deleted', payload: { id } });
             }
             break;

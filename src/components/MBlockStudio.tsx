@@ -47,6 +47,7 @@ import { OnboardSimulatorModule } from './OnboardSimulatorModule.tsx';
 import { MBlockUnitTestPanel } from './MBlockUnitTestPanel.tsx';
 
 interface MBlockStudioProps {
+  projectId: string;
   programs: OnboardProgram[];
   selectedProgramId: string;
   onSelectProgram: (id: string) => void;
@@ -60,6 +61,7 @@ interface MBlockStudioProps {
 let localeApplied = false;
 
 export const MBlockStudio: React.FC<MBlockStudioProps> = ({
+  projectId,
   programs,
   selectedProgramId,
   onSelectProgram,
@@ -539,6 +541,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     const { pythonCode: py, cppCode: cpp } = generateCubeSatCode(workspace);
     onSaveProgram({
       id: activeProgram.id,
+      projectId: activeProgram.projectId || projectId,
       name: activeProgram.name,
       subsystem: activeProgram.subsystem,
       targetBoard: activeProgram.targetBoard,
@@ -599,6 +602,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     };
     onSaveProgram({
       id,
+      projectId,
       name: trimmed,
       subsystem: newSubsystem,
       targetBoard: newBoard,

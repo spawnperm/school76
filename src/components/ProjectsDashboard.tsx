@@ -4,15 +4,20 @@ import {
   AlertTriangle,
   Bell,
   BellRing,
+  Check,
   CheckCircle2,
   Clock,
+  Copy,
   Cpu,
+  Download,
+  FileText,
   GitBranch,
   GitCommit,
   ListChecks,
   PieChart as PieChartIcon,
   RefreshCw,
   Sparkles,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -55,9 +60,25 @@ interface ProjectsDashboardProps {
   onNavigateTab: (tab: 'tasks' | 'wiki' | 'mblock' | 'chat') => void;
   onOpenGitHubSync: () => void;
   onOpenTask?: (taskId: string) => void;
+  onOpenWikiDoc?: (docPath: string) => void;
   onGenerateDescription?: () => Promise<void>;
   generatingDescription?: boolean;
   descriptionError?: string | null;
+  onGenerateReadme?: () => Promise<{
+    readme: string;
+    filename: string;
+    repo: string;
+    generatedAt: string;
+  } | null>;
+  onUploadReadme?: (
+    content: string,
+    commitMessage?: string
+  ) => Promise<{
+    ok: boolean;
+    path: string;
+    repo: string;
+    commit: ForgejoCommit;
+  }>;
 }
 
 interface DeadlineAlert {
@@ -172,9 +193,12 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
   onNavigateTab,
   onOpenGitHubSync,
   onOpenTask,
+  onOpenWikiDoc,
   onGenerateDescription,
   generatingDescription = false,
   descriptionError = null,
+  onGenerateReadme,
+  onUploadReadme,
 }) => {
   const [gitStatus, setGitStatus] = useState<GitHubStatusSummary | null>(null);
   const [forgejoCommits, setForgejoCommits] = useState<ForgejoCommit[]>([]);
@@ -182,6 +206,15 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
   const [nowTs, setNowTs] = useState(() => Date.now());
   const [showDeadlineDrawer, setShowDeadlineDrawer] = useState(false);
   const [dismissedAlertIds, setDismissedAlertIds] = useState<string[]>([]);
+  const [generatingReadme, setGeneratingReadme] = useState(false);
+  const [readmeModalOpen, setReadmeModalOpen] = useState(false);
+  const [readmeDraft, setReadmeDraft] = useState('');
+  const [readmeCommitMsg, setReadmeCommitMsg] = useState('');
+  const [readmeError, setReadmeError] = useState<string | null>(null);
+  const [uploadingReadme, setUploadingReadme] = useState(false);
+  const [uploadedCommit, setUploadedCommit] = useState<ForgejoCommit | null>(null);
+  const [copiedReadme, setCopiedReadme] = useState(false);
+  const [readmeTab, setReadmeTab] = useState<'edit' | 'preview'>('preview');
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -214,7 +247,7 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
 
   useEffect(() => {
     loadCommitMetrics();
-  }, [loadCommitMetrics]);
+  }, [loadCommitMetrics, tasks, programs, membersCount, project.description]);
 
   // Deadline Tracking & 24h Alert Calculation
   const deadlineAnalysis = useMemo(() => {
@@ -372,6 +405,68 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
     }
   };
 
+  const handleGenerateReadmeClick = async () => {
+    if (!onGenerateReadme) return;
+    setGeneratingReadme(true);
+    setReadmeError(null);
+    setUploadedCommit(null);
+    try {
+      const result = await onGenerateReadme();
+      if (!result) return;
+      setReadmeDraft(result.readme);
+      setReadmeCommitMsg(`[AI] Обновлён README.md проекта «${project.name}»`);
+      setReadmeTab('preview');
+      setReadmeModalOpen(true);
+    } catch (err) {
+      setReadmeError(
+        err instanceof Error ? err.message : 'Не удалось сформировать README.md с помощью ИИ'
+      );
+    } finally {
+      setGeneratingReadme(false);
+    }
+  };
+
+  const handleUploadReadmeClick = async () => {
+    if (!onUploadReadme || !readmeDraft.trim()) return;
+    setUploadingReadme(true);
+    setReadmeError(null);
+    try {
+      const result = await onUploadReadme(readmeDraft, readmeCommitMsg.trim() || undefined);
+      setUploadedCommit(result.commit);
+      await loadCommitMetrics();
+    } catch (err) {
+      setReadmeError(
+        err instanceof Error ? err.message : 'Не удалось загрузить README.md в Forgejo'
+      );
+    } finally {
+      setUploadingReadme(false);
+    }
+  };
+
+  const handleDownloadReadme = () => {
+    if (!readmeDraft) return;
+    const blob = new Blob([readmeDraft], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'README.md';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCopyReadme = async () => {
+    if (!readmeDraft) return;
+    try {
+      await navigator.clipboard.writeText(readmeDraft);
+      setCopiedReadme(true);
+      window.setTimeout(() => setCopiedReadme(false), 2000);
+    } catch {
+      // Ignore clipboard permissions issues
+    }
+  };
+
   const hasUrgent = deadlineAnalysis.urgentAll.length > 0;
 
   return (
@@ -446,6 +541,18 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
               {generatingDescription ? 'Генерация ИИ...' : 'Описание с ИИ'}
             </button>
           )}
+          {onGenerateReadme && (
+            <button
+              type="button"
+              onClick={handleGenerateReadmeClick}
+              disabled={generatingReadme}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded hover:bg-indigo-100 disabled:opacity-50"
+              title="Сформировать README.md со структурой и текущим статусом проекта с помощью ИИ для Forgejo"
+            >
+              <FileText className={`w-3.5 h-3.5 ${generatingReadme ? 'animate-pulse' : ''}`} />
+              {generatingReadme ? 'Формирование README...' : 'README.md (ИИ)'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -460,6 +567,11 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
         {descriptionError && (
           <div className="px-3 py-1.5 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded">
             {descriptionError}
+          </div>
+        )}
+        {readmeError && !readmeModalOpen && (
+          <div className="px-3 py-1.5 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded">
+            {readmeError}
           </div>
         )}
       </div>
@@ -1003,6 +1115,234 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
           </div>
         )}
       </div>
+
+      {/* AI-Generated README.md Preview & Forgejo Upload Modal */}
+      {readmeModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Сформированный README.md для Forgejo"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+        >
+          <div className="w-full max-w-4xl max-h-[90vh] flex flex-col bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <FileText className="w-4 h-4 text-indigo-600 shrink-0" />
+                <h3 className="text-sm font-bold text-slate-900 truncate">
+                  README.md для Forgejo · {project.name}
+                </h3>
+                <span className="text-[11px] font-mono text-slate-600 bg-white border border-slate-200 px-2 py-0.5 rounded">
+                  school76/{project.forgejoRepo}/README.md
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReadmeModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+                aria-label="Закрыть окно README.md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="px-5 py-2.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-white">
+              <div className="inline-flex rounded-md border border-slate-200 p-0.5 bg-slate-50 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setReadmeTab('preview')}
+                  className={`px-3 py-1 rounded font-medium transition-colors ${
+                    readmeTab === 'preview'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Предпросмотр
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReadmeTab('edit')}
+                  className={`px-3 py-1 rounded font-medium transition-colors ${
+                    readmeTab === 'edit'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Редактор Markdown
+                </button>
+              </div>
+
+              <div className="flex-1 min-w-[220px] max-w-md flex items-center gap-2">
+                <label
+                  htmlFor="readme-commit-msg"
+                  className="text-[11px] font-medium text-slate-500 whitespace-nowrap"
+                >
+                  Коммит:
+                </label>
+                <input
+                  id="readme-commit-msg"
+                  type="text"
+                  value={readmeCommitMsg}
+                  onChange={(e) => setReadmeCommitMsg(e.target.value)}
+                  className="w-full px-2.5 py-1 text-xs font-mono border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  placeholder="[AI] Обновлён README.md"
+                />
+              </div>
+            </div>
+
+            {readmeError && (
+              <div className="mx-5 mt-3 px-3 py-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded">
+                {readmeError}
+              </div>
+            )}
+
+            {uploadedCommit && (
+              <div className="mx-5 mt-3 px-3.5 py-2.5 text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    Файл <code className="font-mono font-semibold">README.md</code> загружен в
+                    Forgejo (<code className="font-mono">{uploadedCommit.sha}</code>).
+                  </span>
+                </div>
+                {onOpenWikiDoc && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReadmeModalOpen(false);
+                      onOpenWikiDoc('README.md');
+                    }}
+                    className="text-xs font-semibold text-emerald-800 underline hover:text-emerald-950"
+                  >
+                    Открыть в Базе знаний Forgejo
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="flex-1 min-h-[280px] overflow-y-auto p-5 bg-slate-50/40">
+              {readmeTab === 'edit' ? (
+                <textarea
+                  value={readmeDraft}
+                  onChange={(e) => setReadmeDraft(e.target.value)}
+                  spellCheck={false}
+                  className="w-full h-[420px] p-4 text-xs font-mono leading-relaxed text-slate-900 bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+                />
+              ) : (
+                <div className="bg-white border border-slate-200 rounded-md p-5 space-y-2 text-xs text-slate-800 leading-relaxed">
+                  {readmeDraft.split('\n').map((line, idx) => {
+                    if (line.startsWith('# ')) {
+                      return (
+                        <h1 key={idx} className="text-lg font-bold text-slate-900 pt-1 pb-1 border-b border-slate-200">
+                          {line.slice(2)}
+                        </h1>
+                      );
+                    }
+                    if (line.startsWith('## ')) {
+                      return (
+                        <h2 key={idx} className="text-sm font-bold text-slate-900 pt-3">
+                          {line.slice(3)}
+                        </h2>
+                      );
+                    }
+                    if (line.startsWith('### ')) {
+                      return (
+                        <h3 key={idx} className="text-xs font-bold text-slate-800 pt-2">
+                          {line.slice(4)}
+                        </h3>
+                      );
+                    }
+                    if (line.startsWith('```')) {
+                      return (
+                        <div key={idx} className="text-[10px] font-mono text-slate-400">
+                          {line}
+                        </div>
+                      );
+                    }
+                    if (line.startsWith('- ') || line.startsWith('* ')) {
+                      return (
+                        <div key={idx} className="pl-3 flex gap-1.5">
+                          <span className="text-slate-400">•</span>
+                          <span className="font-sans">{line.slice(2)}</span>
+                        </div>
+                      );
+                    }
+                    if (line.startsWith('|')) {
+                      return (
+                        <div key={idx} className="font-mono text-[11px] bg-slate-50 px-2 py-0.5 rounded overflow-x-auto whitespace-pre">
+                          {line}
+                        </div>
+                      );
+                    }
+                    if (!line.trim()) {
+                      return <div key={idx} className="h-1.5" />;
+                    }
+                    return (
+                      <p key={idx} className="whitespace-pre-wrap font-mono text-[11.5px] text-slate-700">
+                        {line}
+                      </p>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleGenerateReadmeClick}
+                  disabled={generatingReadme}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100 disabled:opacity-50"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 ${generatingReadme ? 'animate-pulse' : ''}`} />
+                  {generatingReadme ? 'Обновление...' : 'Перегенерировать'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyReadme}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50"
+                >
+                  {copiedReadme ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  {copiedReadme ? 'Скопировано' : 'Копировать'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadReadme}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Скачать README.md
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReadmeModalOpen(false)}
+                  className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900"
+                >
+                  Закрыть
+                </button>
+                {onUploadReadme && (
+                  <button
+                    type="button"
+                    onClick={handleUploadReadmeClick}
+                    disabled={uploadingReadme || !readmeDraft.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-sky-600 rounded-md hover:bg-sky-700 disabled:opacity-50"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingReadme ? 'Загрузка в Forgejo...' : 'Загрузить в Forgejo'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 };

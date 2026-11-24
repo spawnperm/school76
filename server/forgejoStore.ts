@@ -53,7 +53,7 @@ function readCommitsFile(repoDir: string): ForgejoCommit[] {
 function appendCommit(repoDir: string, commit: ForgejoCommit) {
   const logFile = path.join(repoDir, '.forgejo-commits.json');
   const existing = readCommitsFile(repoDir);
-  const updated = [commit, ...existing].slice(0, 100);
+  const updated = [commit, ...existing].slice(0, 500);
   fs.writeFileSync(logFile, JSON.stringify(updated, null, 2), 'utf-8');
 }
 
@@ -307,6 +307,7 @@ export async function lintForgejoWiki(repo: string, author: string) {
   const brokenLinks: { file: string; target: string }[] = [];
 
   for (const entry of tree) {
+    if (entry.path === 'project/chat.md') continue;
     const { content } = readForgejoFile(repo, entry.path);
     const cleaned = content
       .replace(/```[\s\S]*?```/g, '')
@@ -432,3 +433,85 @@ export async function ingestSourceToWiki(
 
   return { rawPath, wikiPath };
 }
+
+export interface ProjectForgejoSyncOptions {
+  repo: string;
+  projectName: string;
+  filepath: string;
+  content: string;
+  commitMessage: string;
+  logTag: 'PROJECT' | 'TEAM' | 'TASK' | 'MBLOCK' | 'WALL' | 'CHAT' | 'AI';
+  logSummary: string;
+  author: string;
+  sectionLabel?: string;
+}
+
+export function hasForgejoFile(repo: string, filepath: string): boolean {
+  try {
+    const { absPath } = resolveFilePath(repo, filepath);
+    return fs.existsSync(absPath);
+  } catch {
+    return false;
+  }
+}
+
+export function recordProjectChangeToForgejo(opts: ProjectForgejoSyncOptions): ForgejoCommit {
+  const {
+    repo,
+    projectName,
+    filepath,
+    content,
+    commitMessage,
+    logTag,
+    logSummary,
+    author,
+    sectionLabel,
+  } = opts;
+
+  ensureForgejoRepo(repo, projectName);
+  const repoDir = resolveRepoDir(repo);
+  const { absPath, relPath } = resolveFilePath(repo, filepath);
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, content, 'utf-8');
+
+  // Register workspace file in index.md once so it appears as a valid wiki target
+  const indexPath = resolveFilePath(repo, 'index.md').absPath;
+  const targetSlug = relPath.replace(/\.md$/, '');
+  if (fs.existsSync(indexPath)) {
+    const indexContent = fs.readFileSync(indexPath, 'utf-8');
+    if (!indexContent.includes(`[[${targetSlug}]]`)) {
+      const header = '## Рабочее пространство команды';
+      const label = sectionLabel || relPath;
+      const line = `- [[${targetSlug}]] — ${label}`;
+      const nextIndex = indexContent.includes(header)
+        ? `${indexContent.trimEnd()}\n${line}\n`
+        : `${indexContent.trimEnd()}\n\n${header}\n${line}\n`;
+      fs.writeFileSync(indexPath, nextIndex, 'utf-8');
+    }
+  }
+
+  // Append structured event to log.md
+  const logPath = resolveFilePath(repo, 'log.md').absPath;
+  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+  const safeAuthor = author.trim() || 'Команда school76';
+  if (fs.existsSync(logPath)) {
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    const logLine = `- **${stamp} [${logTag}]:** ${logSummary} (${safeAuthor}).`;
+    fs.writeFileSync(logPath, `${logContent.trimEnd()}\n${logLine}\n`, 'utf-8');
+  }
+
+  const commit: ForgejoCommit = {
+    sha: sha1Hex(`${relPath}:${Date.now()}:${commitMessage}`),
+    message: commitMessage.trim() || `Update ${relPath}`,
+    author: safeAuthor,
+    path: relPath,
+    timestamp: new Date().toISOString(),
+  };
+  appendCommit(repoDir, commit);
+
+  // Mirror asynchronously to external Forgejo if configured
+  void mirrorToExternalForgejo(relPath, content, commit.message, repo);
+
+  return commit;
+}
+
