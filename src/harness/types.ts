@@ -31,7 +31,7 @@ export interface HarnessPluginSnapshot {
   providesSeam?: string;
   missingDeps: string[];
   effectCount: number;
-  uiTab?: 'harness' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat';
+  uiTab?: 'harness' | 'marketplace' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat';
   errorMessage?: string;
 }
 
@@ -125,3 +125,47 @@ export interface HarnessRuntimeSnapshot {
     seamsCount: number;
   };
 }
+
+export type MarketplaceCategory = 'device' | 'portal' | 'extension';
+
+export type MakeblockBoardProfileId = 'auriga_stm32' | 'codey_esp32' | 'gizduino_avr';
+
+export interface MarketplaceModuleDescriptor {
+  id: string;
+  name: string;
+  shortLabel: string;
+  category: MarketplaceCategory;
+  subsystem: string;
+  version: string;
+  author: string;
+  description: string;
+  locked?: boolean;
+  defaultInstalled: boolean;
+  defaultActive: boolean;
+  boardProfile?: MakeblockBoardProfileId;
+  baudRate?: number;
+  protocol?: string;
+  cordisPlugins?: string[];
+  seamBinding?: { seamId: string; providerId: string };
+  mblockExtensionId?: string;
+  toolboxCategoryName?: string;
+  recommendedExtensions?: string[];
+  blocksPreview?: string[];
+}
+
+export interface MarketplaceModuleState {
+  installed: boolean;
+  active: boolean;
+  installedAt?: string;
+}
+
+export type MarketplaceEntry = MarketplaceModuleDescriptor & MarketplaceModuleState;
+
+export interface MarketplaceSnapshot {
+  activeDeviceId: string;
+  activeBoardProfile: MakeblockBoardProfileId;
+  activeMBlockExtensions: string[];
+  modules: MarketplaceEntry[];
+  updatedAt: string;
+}
+

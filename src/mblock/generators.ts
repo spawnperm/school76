@@ -220,6 +220,37 @@ export function registerCubeSatGenerators() {
     return [`payload.read_temp('${zone}')`, PyOrder.FUNCTION_CALL];
   };
 
+  pythonGenerator.forBlock['azel_point_antenna'] = function (block, generator) {
+    const az = generator.valueToCode(block, 'AZ', PyOrder.NONE) || '180';
+    const el = generator.valueToCode(block, 'EL', PyOrder.NONE) || '45';
+    return `ground.point_antenna(${az}, ${el})\n`;
+  };
+
+  pythonGenerator.forBlock['azel_track_pass'] = function (block) {
+    const norad = String(block.getFieldValue('NORAD') || 'SCHOOL76-1U').replace(/'/g, "\\'");
+    return `ground.track_pass('${norad}')\n`;
+  };
+
+  pythonGenerator.forBlock['azel_park_home'] = function () {
+    return `ground.park_home()\n`;
+  };
+
+  pythonGenerator.forBlock['azel_get_elevation'] = function () {
+    return [`ground.elevation()`, PyOrder.FUNCTION_CALL];
+  };
+
+  pythonGenerator.forBlock['orbit_is_eclipse'] = function () {
+    return [`orbit.is_eclipse()`, PyOrder.FUNCTION_CALL];
+  };
+
+  pythonGenerator.forBlock['orbit_next_pass_min'] = function () {
+    return [`orbit.next_pass_min()`, PyOrder.FUNCTION_CALL];
+  };
+
+  pythonGenerator.forBlock['orbit_doppler_khz'] = function () {
+    return [`orbit.doppler_khz()`, PyOrder.FUNCTION_CALL];
+  };
+
   // Patch hat blocks so scrub_ doesn't duplicate their body outside the def
   const pyOriginalScrub = pythonGenerator.scrub_;
   pythonGenerator.scrub_ = function (block, code, thisOnly) {
@@ -411,6 +442,37 @@ export function registerCubeSatGenerators() {
 
   cppGenerator.forBlock['payload_read_temp'] = function (block) {
     return [`payload.readTemp("${block.getFieldValue('ZONE')}")`, CPP_ORDER.ATOMIC];
+  };
+
+  cppGenerator.forBlock['azel_point_antenna'] = function (block, generator) {
+    const az = generator.valueToCode(block, 'AZ', CPP_ORDER.NONE) || '180';
+    const el = generator.valueToCode(block, 'EL', CPP_ORDER.NONE) || '45';
+    return `groundTracker.pointAzEl(${az}, ${el});\n`;
+  };
+
+  cppGenerator.forBlock['azel_track_pass'] = function (block) {
+    const norad = String(block.getFieldValue('NORAD') || 'SCHOOL76-1U').replace(/"/g, '\\"');
+    return `groundTracker.trackTle("${norad}");\n`;
+  };
+
+  cppGenerator.forBlock['azel_park_home'] = function () {
+    return `groundTracker.parkZenith();\n`;
+  };
+
+  cppGenerator.forBlock['azel_get_elevation'] = function () {
+    return [`groundTracker.elevationDeg()`, CPP_ORDER.ATOMIC];
+  };
+
+  cppGenerator.forBlock['orbit_is_eclipse'] = function () {
+    return [`orbitModel.inEclipse()`, CPP_ORDER.ATOMIC];
+  };
+
+  cppGenerator.forBlock['orbit_next_pass_min'] = function () {
+    return [`orbitModel.nextPassMinutes()`, CPP_ORDER.ATOMIC];
+  };
+
+  cppGenerator.forBlock['orbit_doppler_khz'] = function () {
+    return [`orbitModel.dopplerShiftKhz()`, CPP_ORDER.ATOMIC];
   };
 
   // Standard Blockly blocks support in C++ generator
@@ -689,6 +751,37 @@ export function registerCubeSatGenerators() {
 
   javascriptGenerator.forBlock['payload_read_temp'] = function (block) {
     return [`sim.readTemp('${block.getFieldValue('ZONE')}')`, JsOrder.FUNCTION_CALL];
+  };
+
+  javascriptGenerator.forBlock['azel_point_antenna'] = function (block, generator) {
+    const az = generator.valueToCode(block, 'AZ', JsOrder.NONE) || '180';
+    const el = generator.valueToCode(block, 'EL', JsOrder.NONE) || '45';
+    return `sim.pointAntenna(${az}, ${el});\n`;
+  };
+
+  javascriptGenerator.forBlock['azel_track_pass'] = function (block) {
+    const norad = String(block.getFieldValue('NORAD') || 'SCHOOL76-1U').replace(/'/g, "\\'");
+    return `sim.trackPass('${norad}');\n`;
+  };
+
+  javascriptGenerator.forBlock['azel_park_home'] = function () {
+    return `sim.parkAntenna();\n`;
+  };
+
+  javascriptGenerator.forBlock['azel_get_elevation'] = function () {
+    return [`sim.getElevation()`, JsOrder.FUNCTION_CALL];
+  };
+
+  javascriptGenerator.forBlock['orbit_is_eclipse'] = function () {
+    return [`sim.isEclipse()`, JsOrder.FUNCTION_CALL];
+  };
+
+  javascriptGenerator.forBlock['orbit_next_pass_min'] = function () {
+    return [`sim.nextPassMin()`, JsOrder.FUNCTION_CALL];
+  };
+
+  javascriptGenerator.forBlock['orbit_doppler_khz'] = function () {
+    return [`sim.dopplerShiftKhz()`, JsOrder.FUNCTION_CALL];
   };
 
   const jsOriginalScrub = javascriptGenerator.scrub_;

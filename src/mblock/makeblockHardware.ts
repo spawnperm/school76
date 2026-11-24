@@ -612,7 +612,7 @@ export interface MBlock5ExtensionSpec {
   name: string;
   version: string;
   author: string;
-  category: 'Core' | 'Protocol' | 'Sensors' | 'Robotics';
+  category: 'Core' | 'Protocol' | 'Sensors' | 'Payload' | 'Robotics' | 'Orbital';
   targets: string[];
   description: string;
   blocksCount: number;
@@ -650,7 +650,18 @@ export const MBLOCK5_EXTENSIONS_CATALOG: MBlock5ExtensionSpec[] = [
     category: 'Sensors',
     targets: ['auriga', 'cyberpi', 'mcore'],
     description: 'Комплементарный фильтр MeGyro (tau=0.5s), калибровка смещения и ПИД-стабилизация с зоной нечувствительности.',
-    blocksCount: 5,
+    blocksCount: 7,
+    requiredByDefault: true,
+  },
+  {
+    id: 'school76_payload_cam',
+    name: 'Payload ДЗЗ и дозиметр радиации',
+    version: '1.1.0',
+    author: 'school76 Payload Lab',
+    category: 'Payload',
+    targets: ['auriga', 'cyberpi'],
+    description: 'Съёмка кадров ДЗЗ (640×480 / 1280×720), дозиметр радиации мкЗв/ч и цифровые датчики TMP117.',
+    blocksCount: 3,
     requiredByDefault: true,
   },
   {
@@ -661,7 +672,18 @@ export const MBLOCK5_EXTENSIONS_CATALOG: MBlock5ExtensionSpec[] = [
     category: 'Robotics',
     targets: ['orion', 'auriga'],
     description: 'Кривые Безье и обратная кинематика SCARA/Az-El для наведения наземной антенны слежения.',
-    blocksCount: 2,
+    blocksCount: 4,
+    requiredByDefault: false,
+  },
+  {
+    id: 'cubesat_orbit_tle',
+    name: 'Орбитальный расчёт TLE и теневых участков',
+    version: '1.0.3',
+    author: 'school76 Dynamics',
+    category: 'Orbital',
+    targets: ['auriga', 'cyberpi'],
+    description: 'Проверка входа в тень Земли, таймер радиовидимости и оценка доплеровского сдвига 435.8 МГц.',
+    blocksCount: 3,
     requiredByDefault: false,
   },
 ];

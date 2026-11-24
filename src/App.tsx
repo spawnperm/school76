@@ -17,6 +17,7 @@ import { CiActionsPanel } from './components/CiActionsPanel.tsx';
 import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
 import { MissionStatusBadge } from './components/MissionStatusBadge.tsx';
 import { HarnessConsole } from './components/HarnessConsole.tsx';
+import { MarketplaceView } from './components/MarketplaceView.tsx';
 import { useHarnessRuntime } from './hooks/useHarnessRuntime.ts';
 import type { WorkspaceTab } from './harness/frontendRegistry.ts';
 import type { ChatChannelId, CommunityProject, CubeSatTask, Subsystem } from './types/cubesat.ts';
@@ -93,7 +94,9 @@ export default function App() {
   );
 
   const resolvedTab: WorkspaceTab = useMemo(() => {
-    if (activeTab === 'cabinet' || activeTab === 'harness') return activeTab;
+    if (activeTab === 'cabinet' || activeTab === 'harness' || activeTab === 'marketplace') {
+      return activeTab;
+    }
     const mounted = harness.navSlots.some((s) => s.tab === activeTab);
     return mounted ? activeTab : 'harness';
   }, [activeTab, harness.navSlots]);
@@ -240,6 +243,22 @@ export default function App() {
           />
         )}
 
+        {resolvedTab === 'marketplace' && (
+          <MarketplaceView
+            marketplace={harness.marketplace}
+            snapshot={harness.snapshot}
+            loading={harness.loading}
+            busyAction={harness.busyAction}
+            error={harness.error}
+            onRefresh={harness.refresh}
+            onInstallModule={harness.installMarketplaceModule}
+            onUninstallModule={harness.uninstallMarketplaceModule}
+            onActivateModule={harness.activateMarketplaceModule}
+            onDeactivateModule={harness.deactivateMarketplaceModule}
+            onOpenTab={(tab) => setActiveTab(tab)}
+          />
+        )}
+
         {resolvedTab === 'projects' && (
           <ProjectsWorkspace
             projects={projects}
@@ -329,6 +348,10 @@ export default function App() {
             onDeleteProgram={deleteProgram}
             onDiscussProgram={openProgramInChat}
             engineerName={profile.name}
+            marketplace={harness.marketplace}
+            onOpenMarketplace={() => setActiveTab('marketplace')}
+            onActivateMarketplaceModule={harness.activateMarketplaceModule}
+            onDeactivateMarketplaceModule={harness.deactivateMarketplaceModule}
           />
         )}
 

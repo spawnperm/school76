@@ -492,12 +492,111 @@ export function registerCubeSatBlocks() {
       colour: '#FF6680',
       tooltip: 'Считывает показания цифрового датчика TMP117 в выбранном отсеке',
     },
+    // 7. Ground · Трекер Az-El (расширение mdrawbot_azel_kinematics)
+    {
+      type: 'azel_point_antenna',
+      message0: 'навести антенну Az-El: азимут %1° угол места %2°',
+      args0: [
+        { type: 'input_value', name: 'AZ', check: 'Number' },
+        { type: 'input_value', name: 'EL', check: 'Number' },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#0EA5E9',
+      tooltip: 'Поворачивает привод mDrawBot на заданные углы азимута (0..360°) и возвышения (0..90°)',
+    },
+    {
+      type: 'azel_track_pass',
+      message0: 'сопровождать пролёт КА %1 по TLE',
+      args0: [
+        {
+          type: 'field_input',
+          name: 'NORAD',
+          text: 'SCHOOL76-1U',
+        },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#0EA5E9',
+      tooltip: 'Запускает замкнутый контур слежения за спутником по данным TLE',
+    },
+    {
+      type: 'azel_park_home',
+      message0: 'припарковать антенну в зенит (Az 0° / El 90°)',
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#0EA5E9',
+      tooltip: 'Возвращает антенную установку в безопасное положение ожидания',
+    },
+    {
+      type: 'azel_get_elevation',
+      message0: 'текущий угол места антенны (°)',
+      output: 'Number',
+      colour: '#0EA5E9',
+      tooltip: 'Возвращает текущий угол возвышения привода mDrawBot Az-El',
+    },
+    // 8. Orbital · Орбита и тень (расширение cubesat_orbit_tle)
+    {
+      type: 'orbit_is_eclipse',
+      message0: 'аппарат в тени Земли?',
+      output: 'Boolean',
+      colour: '#6366F1',
+      tooltip: 'Возвращает ИСТИНА, если аппарат находится на ночном участке орбиты LEO',
+    },
+    {
+      type: 'orbit_next_pass_min',
+      message0: 'минут до радиовидимости',
+      output: 'Number',
+      colour: '#6366F1',
+      tooltip: 'Расчётное время в минутах до следующего пролёта над станцией school76',
+    },
+    {
+      type: 'orbit_doppler_khz',
+      message0: 'сдвиг Доплера 435.8 МГц (кГц)',
+      output: 'Number',
+      colour: '#6366F1',
+      tooltip: 'Оценка доплеровского смещения частоты UHF-маяка для подстройки SDR',
+    },
   ]);
 }
 
-export const CUBESAT_TOOLBOX = {
-  kind: 'categoryToolbox',
-  contents: [
+export function buildCubeSatToolbox(enabledExtensions: string[]): Blockly.utils.toolbox.ToolboxInfo {
+  const has = (extId: string) => enabledExtensions.includes(extId);
+  const showBroadcast = has('upload_mode_broadcast');
+  const showAdcs = has('makeblock_megyro_pid');
+  const showPayload = has('school76_payload_cam');
+  const showAzEl = has('mdrawbot_azel_kinematics');
+  const showOrbit = has('cubesat_orbit_tle');
+
+  const commsContents: Blockly.utils.toolbox.ToolboxItemInfo[] = [
+    {
+      kind: 'block',
+      type: 'comms_send_beacon',
+      inputs: {
+        MSG: { shadow: { type: 'text', fields: { TEXT: 'SCHOOL76-1U OK' } } },
+      },
+    },
+    { kind: 'block', type: 'comms_send_telemetry' },
+    { kind: 'block', type: 'comms_send_makeblock_frame' },
+    { kind: 'block', type: 'comms_set_tx_power' },
+  ];
+
+  if (showBroadcast) {
+    commsContents.push(
+      { kind: 'block', type: 'uplink_broadcast_msg' },
+      {
+        kind: 'block',
+        type: 'uplink_broadcast_msg_val',
+        inputs: {
+          VAL: { shadow: { type: 'math_number', fields: { NUM: 1 } } },
+        },
+      },
+      { kind: 'block', type: 'uplink_on_broadcast' },
+      { kind: 'block', type: 'uplink_broadcast_value' }
+    );
+  }
+
+  const contents: Blockly.utils.toolbox.ToolboxItemInfo[] = [
     {
       kind: 'category',
       name: 'События',
@@ -568,7 +667,10 @@ export const CUBESAT_TOOLBOX = {
         { kind: 'block', type: 'eps_set_heater' },
       ],
     },
-    {
+  ];
+
+  if (showAdcs) {
+    contents.push({
       kind: 'category',
       name: 'ADCS · Ориентация',
       colour: '#9966FF',
@@ -595,35 +697,18 @@ export const CUBESAT_TOOLBOX = {
         },
         { kind: 'block', type: 'adcs_run_bdot' },
       ],
-    },
-    {
-      kind: 'category',
-      name: 'COMMS · Связь',
-      colour: '#0FBD8C',
-      contents: [
-        {
-          kind: 'block',
-          type: 'comms_send_beacon',
-          inputs: {
-            MSG: { shadow: { type: 'text', fields: { TEXT: 'SCHOOL76-1U OK' } } },
-          },
-        },
-        { kind: 'block', type: 'comms_send_telemetry' },
-        { kind: 'block', type: 'comms_send_makeblock_frame' },
-        { kind: 'block', type: 'comms_set_tx_power' },
-        { kind: 'block', type: 'uplink_broadcast_msg' },
-        {
-          kind: 'block',
-          type: 'uplink_broadcast_msg_val',
-          inputs: {
-            VAL: { shadow: { type: 'math_number', fields: { NUM: 1 } } },
-          },
-        },
-        { kind: 'block', type: 'uplink_on_broadcast' },
-        { kind: 'block', type: 'uplink_broadcast_value' },
-      ],
-    },
-    {
+    });
+  }
+
+  contents.push({
+    kind: 'category',
+    name: 'COMMS · Связь',
+    colour: '#0FBD8C',
+    contents: commsContents,
+  });
+
+  if (showPayload) {
+    contents.push({
       kind: 'category',
       name: 'Payload · Нагрузка',
       colour: '#FF6680',
@@ -632,7 +717,44 @@ export const CUBESAT_TOOLBOX = {
         { kind: 'block', type: 'payload_read_radiation' },
         { kind: 'block', type: 'payload_read_temp' },
       ],
-    },
+    });
+  }
+
+  if (showAzEl) {
+    contents.push({
+      kind: 'category',
+      name: 'Ground · Трекер Az-El',
+      colour: '#0EA5E9',
+      contents: [
+        {
+          kind: 'block',
+          type: 'azel_point_antenna',
+          inputs: {
+            AZ: { shadow: { type: 'math_number', fields: { NUM: 180 } } },
+            EL: { shadow: { type: 'math_number', fields: { NUM: 45 } } },
+          },
+        },
+        { kind: 'block', type: 'azel_track_pass' },
+        { kind: 'block', type: 'azel_park_home' },
+        { kind: 'block', type: 'azel_get_elevation' },
+      ],
+    });
+  }
+
+  if (showOrbit) {
+    contents.push({
+      kind: 'category',
+      name: 'Orbital · Орбита и тень',
+      colour: '#6366F1',
+      contents: [
+        { kind: 'block', type: 'orbit_is_eclipse' },
+        { kind: 'block', type: 'orbit_next_pass_min' },
+        { kind: 'block', type: 'orbit_doppler_khz' },
+      ],
+    });
+  }
+
+  contents.push(
     { kind: 'sep' },
     {
       kind: 'category',
@@ -667,6 +789,19 @@ export const CUBESAT_TOOLBOX = {
       name: 'Переменные',
       colour: '#FF8C1A',
       custom: 'VARIABLE',
-    },
-  ],
-};
+    }
+  );
+
+  return {
+    kind: 'categoryToolbox',
+    contents,
+  };
+}
+
+export const CUBESAT_TOOLBOX = buildCubeSatToolbox([
+  'school76_cubesat_core',
+  'makeblock_megyro_pid',
+  'upload_mode_broadcast',
+  'school76_payload_cam',
+]);
+

@@ -3,6 +3,7 @@ import type { HarnessBundleId, HarnessRuntimeSnapshot } from './types.ts';
 
 export type WorkspaceTab =
   | 'harness'
+  | 'marketplace'
   | 'projects'
   | 'tasks'
   | 'wiki'
@@ -47,13 +48,23 @@ const SLOT_DEFS: Array<{
     locked: true,
   },
   {
+    pluginId: 'dsh-ui-marketplace',
+    tab: 'marketplace',
+    label: 'Маркетплейс',
+    name: 'Маркетплейс оборудования и модулей',
+    description: 'Установка и активация контроллеров, программных модулей портала и расширений mBlock 5.',
+    bundle: 'dsh-base',
+    order: 1,
+    locked: true,
+  },
+  {
     pluginId: 'dsh-ui-projects',
     tab: 'projects',
     label: 'Проекты',
     name: 'Проекты и стенд 1U',
     description: '3D-модель кубсата 1U, граф подсистем и лента команды.',
     bundle: 'dsh-cubesat',
-    order: 1,
+    order: 2,
   },
   {
     pluginId: 'dsh-ui-tasks',
@@ -62,7 +73,7 @@ const SLOT_DEFS: Array<{
     name: 'Задачи подсистем',
     description: 'Канбан, таблица, календарь и диаграмма Ганта.',
     bundle: 'dsh-cubesat',
-    order: 2,
+    order: 3,
   },
   {
     pluginId: 'dsh-ui-wiki',
@@ -71,7 +82,7 @@ const SLOT_DEFS: Array<{
     name: 'Forgejo llm-wiki и Univer',
     description: 'Markdown-документация, граф [[wikilinks]] и редактор документов.',
     bundle: 'dsh-devops',
-    order: 3,
+    order: 4,
   },
   {
     pluginId: 'dsh-ui-mblock',
@@ -80,7 +91,7 @@ const SLOT_DEFS: Array<{
     name: 'Студия mBlock',
     description: 'Визуальный конструктор бортового ПО, MicroPython/C++ и стенд.',
     bundle: 'dsh-cubesat',
-    order: 4,
+    order: 5,
   },
   {
     pluginId: 'dsh-ui-ci',
@@ -89,7 +100,7 @@ const SLOT_DEFS: Array<{
     name: 'CI/CD и GitHub Sync',
     description: 'Конвейеры GitHub Actions, Forgejo Actions и публикация в репозиторий.',
     bundle: 'dsh-devops',
-    order: 5,
+    order: 6,
   },
   {
     pluginId: 'dsh-ui-chat',
@@ -98,7 +109,7 @@ const SLOT_DEFS: Array<{
     name: 'Техчат команды',
     description: 'Каналы подсистем реального времени по WebSocket.',
     bundle: 'dsh-collab',
-    order: 6,
+    order: 7,
   },
 ];
 

@@ -85,6 +85,11 @@ export interface CubeSatTelemetry {
   history: TelemetryPoint[];
   makeblockFrames: MakeblockSerialFrame[];
   logs: SimLogEntry[];
+  groundAntenna: {
+    azDeg: number;
+    elDeg: number;
+    trackingTarget: string;
+  };
 }
 
 export interface ThermalNodeInfo {
@@ -348,6 +353,11 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     ],
     makeblockFrames: [],
     logs: [],
+    groundAntenna: {
+      azDeg: 0,
+      elDeg: 90,
+      trackingTarget: 'ZENITH-PARK',
+    },
   };
 
   if (scenario === 'low_battery') {
@@ -806,6 +816,42 @@ export function createSimRuntime(
     },
     readRadiation: () => Number(getState().radiationUsv.toFixed(2)),
     readTemp: (zone: 'OBC' | 'BAT' | 'CAM') => Number((getState().temps[zone] ?? 20).toFixed(1)),
+    pointAntenna: (az: unknown, el: unknown) => {
+      const azDeg = Math.max(0, Math.min(360, Number(az ?? 180)));
+      const elDeg = Math.max(0, Math.min(90, Number(el ?? 45)));
+      updateState((prev) => ({
+        ...prev,
+        groundAntenna: {
+          azDeg: Number(azDeg.toFixed(1)),
+          elDeg: Number(elDeg.toFixed(1)),
+          trackingTarget: 'MANUAL-AZEL',
+        },
+        logs: appendLog(prev, 'COMMS', `mDrawBot Az-El -> Az ${azDeg.toFixed(1)}°, El ${elDeg.toFixed(1)}°`),
+      }));
+    },
+    trackPass: (norad: string) => {
+      updateState((prev) => {
+        const t = prev.simTimeSec;
+        const azDeg = Number((((t * 4.5 + 115) % 360 + 360) % 360).toFixed(1));
+        const elDeg = Number((18 + Math.abs(Math.sin(t * 0.08)) * 64).toFixed(1));
+        return {
+          ...prev,
+          groundAntenna: { azDeg, elDeg, trackingTarget: norad || 'SCHOOL76-1U' },
+          logs: appendLog(prev, 'COMMS', `TLE-трекинг ${norad || 'SCHOOL76-1U'}: Az ${azDeg}° / El ${elDeg}°`),
+        };
+      });
+    },
+    parkAntenna: () => {
+      updateState((prev) => ({
+        ...prev,
+        groundAntenna: { azDeg: 0, elDeg: 90, trackingTarget: 'ZENITH-PARK' },
+        logs: appendLog(prev, 'COMMS', 'Антенна mDrawBot припаркована в зенит (0° / 90°)'),
+      }));
+    },
+    getElevation: () => getState().groundAntenna.elDeg,
+    isEclipse: () => getState().inEclipse,
+    nextPassMin: () => Number((14.5 - (getState().simTimeSec % 600) / 60).toFixed(1)),
+    dopplerShiftKhz: () => Number((Math.cos(getState().simTimeSec * 0.12) * 8.4).toFixed(2)),
   };
 
   return { simApi, appendLog };

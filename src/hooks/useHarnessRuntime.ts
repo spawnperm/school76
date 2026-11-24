@@ -7,10 +7,12 @@ import type {
   HarnessAgentRunResult,
   HarnessRuntimeSnapshot,
   HarnessToolExecutionResult,
+  MarketplaceSnapshot,
 } from '../harness/types.ts';
 
 export function useHarnessRuntime() {
   const [snapshot, setSnapshot] = useState<HarnessRuntimeSnapshot | null>(null);
+  const [marketplace, setMarketplace] = useState<MarketplaceSnapshot | null>(null);
   const [agentHistory, setAgentHistory] = useState<HarnessAgentRunResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -24,16 +26,25 @@ export function useHarnessRuntime() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const res = await fetch('/api/harness/state');
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Не удалось загрузить состояние DeepSeek-Harness');
+      const [harnessRes, marketRes] = await Promise.all([
+        fetch('/api/harness/state'),
+        fetch('/api/marketplace'),
+      ]);
+      const harnessData = await harnessRes.json().catch(() => ({}));
+      if (!harnessRes.ok) {
+        throw new Error(harnessData.error || 'Не удалось загрузить состояние DeepSeek-Harness');
       }
-      if (data.snapshot) {
-        setSnapshot(data.snapshot as HarnessRuntimeSnapshot);
+      if (harnessData.snapshot) {
+        setSnapshot(harnessData.snapshot as HarnessRuntimeSnapshot);
       }
-      if (Array.isArray(data.agentHistory)) {
-        setAgentHistory(data.agentHistory as HarnessAgentRunResult[]);
+      if (Array.isArray(harnessData.agentHistory)) {
+        setAgentHistory(harnessData.agentHistory as HarnessAgentRunResult[]);
+      }
+      if (marketRes.ok) {
+        const marketData = await marketRes.json().catch(() => ({}));
+        if (marketData.marketplace) {
+          setMarketplace(marketData.marketplace as MarketplaceSnapshot);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка подключения к ядру DeepSeek-Harness');
@@ -56,6 +67,7 @@ export function useHarnessRuntime() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Не удалось переключить профиль');
       if (data.snapshot) setSnapshot(data.snapshot);
+      if (data.marketplace) setMarketplace(data.marketplace);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка переключения профиля');
     } finally {
@@ -75,6 +87,7 @@ export function useHarnessRuntime() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Не удалось изменить состояние плагина');
       if (data.snapshot) setSnapshot(data.snapshot);
+      if (data.marketplace) setMarketplace(data.marketplace);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка переключения плагина');
     } finally {
@@ -94,12 +107,60 @@ export function useHarnessRuntime() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Не удалось переключить провайдер шва');
       if (data.snapshot) setSnapshot(data.snapshot);
+      if (data.marketplace) setMarketplace(data.marketplace);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка смены провайдера');
     } finally {
       setBusyAction(null);
     }
   }, []);
+
+  const mutateMarketplace = useCallback(
+    async (
+      moduleId: string,
+      action: 'install' | 'uninstall' | 'activate' | 'deactivate'
+    ): Promise<MarketplaceSnapshot | null> => {
+      setBusyAction(`market:${action}:${moduleId}`);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/marketplace/modules/${encodeURIComponent(moduleId)}/${action}`,
+          { method: 'POST' }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Ошибка операции Маркетплейса');
+        if (data.marketplace) setMarketplace(data.marketplace as MarketplaceSnapshot);
+        if (data.snapshot) setSnapshot(data.snapshot as HarnessRuntimeSnapshot);
+        return (data.marketplace as MarketplaceSnapshot) || null;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ошибка операции Маркетплейса');
+        return null;
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    []
+  );
+
+  const installMarketplaceModule = useCallback(
+    (moduleId: string) => mutateMarketplace(moduleId, 'install'),
+    [mutateMarketplace]
+  );
+
+  const uninstallMarketplaceModule = useCallback(
+    (moduleId: string) => mutateMarketplace(moduleId, 'uninstall'),
+    [mutateMarketplace]
+  );
+
+  const activateMarketplaceModule = useCallback(
+    (moduleId: string) => mutateMarketplace(moduleId, 'activate'),
+    [mutateMarketplace]
+  );
+
+  const deactivateMarketplaceModule = useCallback(
+    (moduleId: string) => mutateMarketplace(moduleId, 'deactivate'),
+    [mutateMarketplace]
+  );
 
   const executeTool = useCallback(
     async (
@@ -117,6 +178,7 @@ export function useHarnessRuntime() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Ошибка вызова инструмента');
         if (data.snapshot) setSnapshot(data.snapshot);
+        if (data.marketplace) setMarketplace(data.marketplace);
         return data.result as HarnessToolExecutionResult;
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Ошибка вызова инструмента';
@@ -142,6 +204,7 @@ export function useHarnessRuntime() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Ошибка выполнения агентского цикла');
         if (data.snapshot) setSnapshot(data.snapshot);
+        if (data.marketplace) setMarketplace(data.marketplace);
         if (Array.isArray(data.agentHistory)) setAgentHistory(data.agentHistory);
         return (data.run as HarnessAgentRunResult) || null;
       } catch (err) {
@@ -156,6 +219,7 @@ export function useHarnessRuntime() {
 
   return {
     snapshot,
+    marketplace,
     agentHistory,
     navSlots,
     loading,
@@ -165,6 +229,10 @@ export function useHarnessRuntime() {
     activateProfile,
     togglePlugin,
     switchSeamProvider,
+    installMarketplaceModule,
+    uninstallMarketplaceModule,
+    activateMarketplaceModule,
+    deactivateMarketplaceModule,
     executeTool,
     runAgentGoal,
   };

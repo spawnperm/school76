@@ -8,7 +8,9 @@ import type {
   HarnessRuntimeSnapshot,
   HarnessToolExecutionResult,
   HarnessToolSchema,
+  MarketplaceSnapshot,
 } from '../../src/harness/types.ts';
+import { createMarketplaceController } from './marketplace.ts';
 import {
   dispatchForgejoActionRun,
   lintForgejoWiki,
@@ -41,6 +43,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-llm-gemini',
       'dsh-agent-loop',
       'dsh-ui-harness',
+      'dsh-ui-marketplace',
       'dsh-ui-projects',
       'dsh-ui-tasks',
       'dsh-ui-wiki',
@@ -71,6 +74,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-llm-deterministic',
       'dsh-agent-loop',
       'dsh-ui-harness',
+      'dsh-ui-marketplace',
       'dsh-ui-projects',
       'dsh-ui-tasks',
       'dsh-ui-mblock',
@@ -97,6 +101,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-llm-gemini',
       'dsh-agent-loop',
       'dsh-ui-harness',
+      'dsh-ui-marketplace',
       'dsh-ui-wiki',
       'dsh-ui-ci',
     ],
@@ -121,6 +126,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-llm-deterministic',
       'dsh-agent-loop',
       'dsh-ui-harness',
+      'dsh-ui-marketplace',
     ],
     seamProviders: {
       'dsh-store': 'dsh-store-json',
@@ -139,6 +145,11 @@ export interface ServerHarnessRuntime {
   executeTool: (toolName: string, args: Record<string, unknown>) => Promise<HarnessToolExecutionResult>;
   runAgentGoal: (goal: string, projectId?: string) => Promise<HarnessAgentRunResult>;
   getAgentHistory: () => HarnessAgentRunResult[];
+  getMarketplace: () => MarketplaceSnapshot;
+  installMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
+  uninstallMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
+  activateMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
+  deactivateMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
 }
 
 export function createServerHarness(
@@ -148,6 +159,7 @@ export function createServerHarness(
   const kernel = new HarnessKernel<ServerHarnessServices>('DeepSeek-Harness (Cordis)');
   const toolHandlers = new Map<string, ToolHandlerEntry>();
   const agentHistory: HarnessAgentRunResult[] = [];
+  const marketplace = createMarketplaceController(rootDir, kernel);
 
   kernel
     .defineSeam('dsh-store', 'Хранилище состояния', 'Управление проектами, задачами, программами ПО и профилями.')
@@ -514,6 +526,66 @@ export function createServerHarness(
           const bucket = typeof args.bucket === 'string' && args.bucket.trim() ? args.bucket.trim() : 'school76-media';
           const objects = await s3.listObjects(bucket);
           return { bucket, count: objects.length, objects };
+        }
+      );
+
+      register(
+        {
+          name: 'marketplace.list',
+          seam: 'dsh-tools',
+          description: 'Показать активный контроллер и установленные модули Маркетплейса оборудования и расширений.',
+          mutating: false,
+          parameters: {
+            category: {
+              type: 'string',
+              description: 'Фильтр категории: device, portal, extension',
+              enum: ['device', 'portal', 'extension'],
+            },
+          },
+        },
+        async (args) => {
+          const snap = marketplace.getSnapshot();
+          const cat = typeof args.category === 'string' ? args.category.trim() : '';
+          const filtered = cat ? snap.modules.filter((m) => m.category === cat) : snap.modules;
+          return {
+            activeDeviceId: snap.activeDeviceId,
+            activeBoardProfile: snap.activeBoardProfile,
+            activeMBlockExtensions: snap.activeMBlockExtensions,
+            modules: filtered.map((m) => ({
+              id: m.id,
+              name: m.shortLabel,
+              category: m.category,
+              installed: m.installed,
+              active: m.active,
+            })),
+          };
+        }
+      );
+
+      register(
+        {
+          name: 'marketplace.activate',
+          seam: 'dsh-tools',
+          description: 'Установить и активировать устройство, программный модуль портала или расширение mBlock из Маркетплейса.',
+          mutating: true,
+          parameters: {
+            moduleId: {
+              type: 'string',
+              description: 'Идентификатор модуля (например dev-cyberpi-esp32, mdrawbot_azel_kinematics, mod-portal-chat)',
+              required: true,
+            },
+          },
+        },
+        async (args) => {
+          const moduleId = typeof args.moduleId === 'string' ? args.moduleId.trim() : '';
+          if (!moduleId) throw new Error('Параметр moduleId обязателен');
+          const snap = marketplace.activateModule(moduleId);
+          return {
+            activated: moduleId,
+            activeDeviceId: snap.activeDeviceId,
+            activeBoardProfile: snap.activeBoardProfile,
+            activeMBlockExtensions: snap.activeMBlockExtensions,
+          };
         }
       );
 
@@ -917,7 +989,7 @@ export function createServerHarness(
     name: string;
     description: string;
     bundle: 'dsh-base' | 'dsh-cubesat' | 'dsh-devops' | 'dsh-collab';
-    uiTab: 'harness' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat';
+    uiTab: 'harness' | 'marketplace' | 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat';
     inject: string[];
     locked?: boolean;
   }> = [
@@ -928,6 +1000,15 @@ export function createServerHarness(
       bundle: 'dsh-base',
       uiTab: 'harness',
       inject: ['store', 'tools'],
+      locked: true,
+    },
+    {
+      id: 'dsh-ui-marketplace',
+      name: 'Маркетплейс оборудования и модулей',
+      description: 'Центр установки и активации контроллеров, программных модулей портала и расширений mBlock 5.',
+      bundle: 'dsh-base',
+      uiTab: 'marketplace',
+      inject: ['store'],
       locked: true,
     },
     {
@@ -999,17 +1080,24 @@ export function createServerHarness(
   }
 
   kernel.activateProfile('cubesat-full');
+  marketplace.syncToKernel();
 
   return {
     kernel,
     getSnapshot: () => kernel.getSnapshot(),
-    activateProfile: (profileId) => kernel.activateProfile(profileId),
+    activateProfile: (profileId) => {
+      const snap = kernel.activateProfile(profileId);
+      marketplace.syncFromKernel();
+      return snap;
+    },
     togglePlugin: (pluginId, enabled) => {
       kernel.togglePlugin(pluginId, enabled);
+      marketplace.syncFromKernel();
       return kernel.getSnapshot();
     },
     switchSeamProvider: (seamId, providerId) => {
       kernel.switchSeamProvider(seamId, providerId);
+      marketplace.syncFromKernel();
       return kernel.getSnapshot();
     },
     executeTool: async (toolName, args) => {
@@ -1033,6 +1121,11 @@ export function createServerHarness(
       return agentSvc.runGoal(goal, projectId);
     },
     getAgentHistory: () => [...agentHistory],
+    getMarketplace: () => marketplace.getSnapshot(),
+    installMarketplaceModule: (moduleId) => marketplace.installModule(moduleId),
+    uninstallMarketplaceModule: (moduleId) => marketplace.uninstallModule(moduleId),
+    activateMarketplaceModule: (moduleId) => marketplace.activateModule(moduleId),
+    deactivateMarketplaceModule: (moduleId) => marketplace.deactivateModule(moduleId),
   };
 }
 
@@ -1050,7 +1143,7 @@ export function registerHarnessRoutes(
   app.post('/api/harness/profiles/:profileId/activate', (req, res) => {
     try {
       const snapshot = runtime.activateProfile(req.params.profileId);
-      res.json({ ok: true, snapshot });
+      res.json({ ok: true, snapshot, marketplace: runtime.getMarketplace() });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Profile activation failed' });
     }
@@ -1060,7 +1153,7 @@ export function registerHarnessRoutes(
     try {
       const enabled = typeof req.body?.enabled === 'boolean' ? req.body.enabled : undefined;
       const snapshot = runtime.togglePlugin(req.params.pluginId, enabled);
-      res.json({ ok: true, snapshot });
+      res.json({ ok: true, snapshot, marketplace: runtime.getMarketplace() });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Plugin toggle failed' });
     }
@@ -1074,7 +1167,7 @@ export function registerHarnessRoutes(
         return;
       }
       const snapshot = runtime.switchSeamProvider(req.params.seamId, providerId);
-      res.json({ ok: true, snapshot });
+      res.json({ ok: true, snapshot, marketplace: runtime.getMarketplace() });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Seam swap failed' });
     }
@@ -1087,6 +1180,7 @@ export function registerHarnessRoutes(
       res.json({
         result,
         snapshot: runtime.getSnapshot(),
+        marketplace: runtime.getMarketplace(),
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Tool execution failed' });
@@ -1106,9 +1200,53 @@ export function registerHarnessRoutes(
         run,
         snapshot: runtime.getSnapshot(),
         agentHistory: runtime.getAgentHistory(),
+        marketplace: runtime.getMarketplace(),
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Agent loop failed' });
+    }
+  });
+
+  app.get('/api/marketplace', (_req, res) => {
+    res.json({
+      marketplace: runtime.getMarketplace(),
+      snapshot: runtime.getSnapshot(),
+    });
+  });
+
+  app.post('/api/marketplace/modules/:moduleId/install', (req, res) => {
+    try {
+      const marketplace = runtime.installMarketplaceModule(req.params.moduleId);
+      res.json({ ok: true, marketplace, snapshot: runtime.getSnapshot() });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Marketplace install failed' });
+    }
+  });
+
+  app.post('/api/marketplace/modules/:moduleId/uninstall', (req, res) => {
+    try {
+      const marketplace = runtime.uninstallMarketplaceModule(req.params.moduleId);
+      res.json({ ok: true, marketplace, snapshot: runtime.getSnapshot() });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Marketplace uninstall failed' });
+    }
+  });
+
+  app.post('/api/marketplace/modules/:moduleId/activate', (req, res) => {
+    try {
+      const marketplace = runtime.activateMarketplaceModule(req.params.moduleId);
+      res.json({ ok: true, marketplace, snapshot: runtime.getSnapshot() });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Marketplace activate failed' });
+    }
+  });
+
+  app.post('/api/marketplace/modules/:moduleId/deactivate', (req, res) => {
+    try {
+      const marketplace = runtime.deactivateMarketplaceModule(req.params.moduleId);
+      res.json({ ok: true, marketplace, snapshot: runtime.getSnapshot() });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Marketplace deactivate failed' });
     }
   });
 }

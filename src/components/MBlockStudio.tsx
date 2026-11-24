@@ -27,7 +27,12 @@ import type {
   TargetBoard,
 } from '../types/cubesat.ts';
 import { SUBSYSTEM_LABELS } from '../types/cubesat.ts';
-import { CUBESAT_TOOLBOX, registerCubeSatBlocks } from '../mblock/cubesatBlocks.ts';
+import {
+  CUBESAT_TOOLBOX,
+  buildCubeSatToolbox,
+  registerCubeSatBlocks,
+} from '../mblock/cubesatBlocks.ts';
+import type { MarketplaceSnapshot } from '../harness/types.ts';
 import { generateCubeSatCode } from '../mblock/generators.ts';
 import {
   bindCompiledHandlers,
@@ -86,6 +91,10 @@ interface MBlockStudioProps {
   onDeleteProgram: (id: string) => void;
   onDiscussProgram: (programId: string) => void;
   engineerName: string;
+  marketplace?: MarketplaceSnapshot | null;
+  onOpenMarketplace?: () => void;
+  onActivateMarketplaceModule?: (moduleId: string) => Promise<MarketplaceSnapshot | null>;
+  onDeactivateMarketplaceModule?: (moduleId: string) => Promise<MarketplaceSnapshot | null>;
 }
 
 let localeApplied = false;
@@ -100,13 +109,19 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   onDeleteProgram,
   onDiscussProgram,
   engineerName,
+  marketplace,
+  onOpenMarketplace,
+  onActivateMarketplaceModule,
+  onDeactivateMarketplaceModule,
 }) => {
   const activeProgram =
     programs.find((p) => p.id === selectedProgramId) || programs[0];
 
   const [panelMode, setPanelMode] = useState<'tests' | 'live' | 'code' | 'history'>('live');
   const [codeLang, setCodeLang] = useState<'python' | 'codey' | 'cpp' | 'bundle'>('python');
-  const [boardProfile, setBoardProfile] = useState<MakeblockBoardProfileId>('auriga_stm32');
+  const [boardProfile, setBoardProfile] = useState<MakeblockBoardProfileId>(
+    () => marketplace?.activeBoardProfile || 'auriga_stm32'
+  );
   const [bundleFile, setBundleFile] = useState<'s2e' | 'header' | 'mext'>('s2e');
   const [pythonCode, setPythonCode] = useState(activeProgram?.pythonCode || '');
   const [codeyCode, setCodeyCode] = useState('');
@@ -126,7 +141,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
   // mBlock 5 Extensions Center & WebSerial Hardware Transport state
   const [enabledExtensions, setEnabledExtensions] = useState<string[]>(() =>
-    MBLOCK5_EXTENSIONS_CATALOG.filter((ext) => ext.requiredByDefault).map((ext) => ext.id)
+    marketplace?.activeMBlockExtensions?.length
+      ? marketplace.activeMBlockExtensions
+      : MBLOCK5_EXTENSIONS_CATALOG.filter((ext) => ext.requiredByDefault).map((ext) => ext.id)
   );
   const [showExtensionsModal, setShowExtensionsModal] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -214,7 +231,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     registerCubeSatBlocks();
 
     const workspace = Blockly.inject(blocklyHostRef.current, {
-      toolbox: CUBESAT_TOOLBOX,
+      toolbox: buildCubeSatToolbox(enabledExtensions),
       renderer: 'zelos',
       theme: Blockly.Themes.Zelos,
       grid: {
@@ -370,6 +387,22 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
       void disconnectWebSerial();
     };
   }, [stopSimulation, disconnectWebSerial]);
+
+  // Keep studio boardProfile & enabledExtensions synchronized with Marketplace
+  useEffect(() => {
+    if (!marketplace) return;
+    setBoardProfile(marketplace.activeBoardProfile);
+    if (marketplace.activeMBlockExtensions.length > 0) {
+      setEnabledExtensions(marketplace.activeMBlockExtensions);
+    }
+  }, [marketplace]);
+
+  // Dynamically update Blockly toolbox when active Marketplace extensions change
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    workspace.updateToolbox(buildCubeSatToolbox(enabledExtensions) as Blockly.utils.toolbox.ToolboxDefinition);
+  }, [enabledExtensions]);
 
   // Start Live mBlock Simulation
   const startSimulation = useCallback(async () => {
@@ -1230,20 +1263,37 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
       {/* mBlock 5 Device Manager & Hardware Transport Strip */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-1.5 bg-slate-50 border-b border-slate-200 text-xs">
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Device Selector */}
+          {/* Device Selector synced with Marketplace */}
           <div className="inline-flex items-center gap-1.5">
             <Cpu className="w-3.5 h-3.5 text-slate-500" />
             <span className="text-slate-500">Контроллер:</span>
             <select
               aria-label="Целевой контроллер mBlock"
               value={boardProfile}
-              onChange={(e) => setBoardProfile(e.target.value as MakeblockBoardProfileId)}
+              onChange={(e) => {
+                const next = e.target.value as MakeblockBoardProfileId;
+                setBoardProfile(next);
+                if (onActivateMarketplaceModule) {
+                  const devId =
+                    next === 'codey_esp32'
+                      ? 'dev-cyberpi-esp32'
+                      : next === 'gizduino_avr'
+                        ? 'dev-orion-avr'
+                        : 'dev-auriga-stm32';
+                  void onActivateMarketplaceModule(devId);
+                }
+              }}
               className="px-2 py-1 text-xs font-medium bg-white border border-slate-200 rounded text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500"
             >
               <option value="auriga_stm32">Auriga / STM32F4</option>
               <option value="codey_esp32">CyberPi / ESP32</option>
               <option value="gizduino_avr">MeOrion / e-Gizmo AVR</option>
             </select>
+            {marketplace && (
+              <span className="hidden md:inline font-mono text-[11px] text-slate-500">
+                {marketplace.modules.find((m) => m.id === marketplace.activeDeviceId)?.shortLabel || ''}
+              </span>
+            )}
           </div>
         </div>
 
@@ -1281,6 +1331,16 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             <Puzzle className="w-3.5 h-3.5 text-sky-600" />
             Расширения .mext ({enabledExtensions.length})
           </button>
+
+          {onOpenMarketplace && (
+            <button
+              type="button"
+              onClick={onOpenMarketplace}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-sky-700 bg-sky-50 border border-sky-200 rounded hover:bg-sky-100 transition-colors whitespace-nowrap shrink-0"
+            >
+              Маркетплейс
+            </button>
+          )}
 
           <button
             type="button"
@@ -1815,10 +1875,13 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {MBLOCK5_EXTENSIONS_CATALOG.map((ext) => {
                   const enabled = enabledExtensions.includes(ext.id);
+                  const locked = Boolean(ext.requiredByDefault && ext.id === 'school76_cubesat_core');
                   return (
                     <label
                       key={ext.id}
-                      className={`p-3 rounded-lg border cursor-pointer transition-colors flex items-start gap-2.5 ${
+                      className={`p-3 rounded-lg border transition-colors flex items-start gap-2.5 ${
+                        locked ? 'cursor-default' : 'cursor-pointer'
+                      } ${
                         enabled
                           ? 'bg-sky-50/60 border-sky-300'
                           : 'bg-white border-slate-200 hover:bg-slate-50'
@@ -1827,13 +1890,21 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                       <input
                         type="checkbox"
                         checked={enabled}
-                        onChange={() =>
-                          setEnabledExtensions((prev) =>
-                            prev.includes(ext.id)
-                              ? prev.filter((id) => id !== ext.id)
-                              : [...prev, ext.id]
-                          )
-                        }
+                        disabled={locked}
+                        onChange={() => {
+                          if (locked) return;
+                          if (enabled) {
+                            setEnabledExtensions((prev) => prev.filter((id) => id !== ext.id));
+                            if (onDeactivateMarketplaceModule) {
+                              void onDeactivateMarketplaceModule(ext.id);
+                            }
+                          } else {
+                            setEnabledExtensions((prev) => [...prev, ext.id]);
+                            if (onActivateMarketplaceModule) {
+                              void onActivateMarketplaceModule(ext.id);
+                            }
+                          }
+                        }}
                         className="mt-0.5 accent-sky-600"
                       />
                       <div className="min-w-0 flex-1 space-y-1">
@@ -1903,17 +1974,31 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               </div>
             </div>
 
-            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-2 text-xs text-slate-500">
               <span className="font-mono">
                 Профиль: {MAKEBLOCK_BOARD_PROFILES[boardProfile].label} ({MAKEBLOCK_BOARD_PROFILES[boardProfile].baudRate} бод)
               </span>
-              <button
-                type="button"
-                onClick={() => setShowExtensionsModal(false)}
-                className="px-3.5 py-1.5 font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100"
-              >
-                Готово
-              </button>
+              <div className="flex items-center gap-2">
+                {onOpenMarketplace && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowExtensionsModal(false);
+                      onOpenMarketplace();
+                    }}
+                    className="px-3.5 py-1.5 font-medium text-sky-700 bg-sky-50 border border-sky-200 rounded hover:bg-sky-100"
+                  >
+                    Весь Маркетплейс
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowExtensionsModal(false)}
+                  className="px-3.5 py-1.5 font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                >
+                  Готово
+                </button>
+              </div>
             </div>
           </div>
         </div>
