@@ -34,6 +34,7 @@ import { SUBSYSTEM_LABELS } from '../types/cubesat.ts';
 import { HardwareBench } from './HardwareBench.tsx';
 import { CubeSat3DViewer } from './CubeSat3DViewer.tsx';
 import { ProjectsDashboard } from './ProjectsDashboard.tsx';
+import { CiActionsPanel } from './CiActionsPanel.tsx';
 
 function isSafeImageSrc(src: string): boolean {
   return src.startsWith('/api/s3/') || src.startsWith('https://');
@@ -733,6 +734,7 @@ interface ProjectsViewProps {
     description: string;
     category: string;
     tags: string[];
+    githubRepo?: string;
   }) => Promise<CommunityProject>;
   onToggleJoinProject: (projectId: string) => Promise<void>;
   onToggleFollow: (userId: string) => Promise<void>;
@@ -800,6 +802,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newName, setNewName] = useState('');
   const [newSlug, setNewSlug] = useState('');
+  const [newGithubRepo, setNewGithubRepo] = useState('');
   const [newCategory, setNewCategory] = useState('Космический аппарат');
   const [newDescription, setNewDescription] = useState('');
   const [newTags, setNewTags] = useState('CubeSat, mBlock, Telemetry');
@@ -853,11 +856,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean),
+        ...(newGithubRepo.trim() ? { githubRepo: newGithubRepo.trim() } : {}),
       });
       onSelectProject(created.id);
       setShowCreateModal(false);
       setNewName('');
       setNewSlug('');
+      setNewGithubRepo('');
       setNewDescription('');
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Ошибка создания проекта');
@@ -969,6 +974,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         descriptionError={descriptionError}
         onGenerateReadme={handleGenerateReadme}
         onUploadReadme={handleUploadReadme}
+      />
+
+      {/* CI/CD Actions Panel (GitHub Actions + Team Projects Forgejo Actions) */}
+      <CiActionsPanel
+        projects={projects}
+        activeProject={activeProject}
+        isAuthenticated={Boolean(currentUser)}
+        onRequireAuth={onRequireAuth}
+        authFetch={authFetch}
       />
 
       {/* Interactive 3D CubeSat Twin colored by subsystem task readiness */}
@@ -1437,6 +1451,19 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   value={newTags}
                   onChange={(e) => setNewTags(e.target.value)}
                   className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  GitHub-репозиторий команды (необязательно)
+                </label>
+                <input
+                  type="text"
+                  value={newGithubRepo}
+                  onChange={(e) => setNewGithubRepo(e.target.value)}
+                  placeholder="owner/repo (для мониторинга GitHub Actions)"
+                  className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
               </div>
             </div>

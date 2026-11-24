@@ -109,6 +109,7 @@ export interface CommunityProject {
   ownerId: string;
   memberIds: string[];
   forgejoRepo: string;
+  githubRepo?: string;
   s3Bucket: string;
   createdAt: string;
 }
@@ -149,6 +150,50 @@ export interface ForgejoCommit {
   author: string;
   path: string;
   timestamp: string;
+}
+
+export type CiWorkflowProvider = 'github' | 'forgejo';
+export type CiRunStatus = 'queued' | 'in_progress' | 'completed';
+export type CiRunConclusion =
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  | 'timed_out'
+  | 'skipped'
+  | 'neutral'
+  | null;
+
+export interface CiJobStep {
+  name: string;
+  status: CiRunStatus;
+  conclusion: CiRunConclusion;
+  durationSec?: number;
+  logLine?: string;
+}
+
+export interface CiWorkflowRun {
+  id: string;
+  provider: CiWorkflowProvider;
+  repo: string;
+  projectId?: string;
+  projectName?: string;
+  workflowName: string;
+  runNumber: number;
+  runAttempt: number;
+  title: string;
+  branch: string;
+  commitSha: string;
+  event: string;
+  actor: string;
+  status: CiRunStatus;
+  conclusion: CiRunConclusion;
+  createdAt: string;
+  updatedAt: string;
+  durationSec?: number;
+  htmlUrl?: string;
+  canRerun: boolean;
+  steps?: CiJobStep[];
+  errorSummary?: string;
 }
 
 export interface GarageObjectMeta {

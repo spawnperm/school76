@@ -290,7 +290,14 @@ export function useMissionSync(activeTab: string) {
   );
 
   const createProject = useCallback(
-    async (payload: { name: string; slug: string; description: string; category: string; tags: string[] }) => {
+    async (payload: {
+      name: string;
+      slug: string;
+      description: string;
+      category: string;
+      tags: string[];
+      githubRepo?: string;
+    }) => {
       const data = await authFetch('/api/projects', {
         method: 'POST',
         body: JSON.stringify(payload),

@@ -1,7 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import type { ForgejoCommit, ForgejoFileEntry } from '../src/types/cubesat.ts';
+import type {
+  CiJobStep,
+  CiRunConclusion,
+  CiRunStatus,
+  CiWorkflowRun,
+  ForgejoCommit,
+  ForgejoFileEntry,
+} from '../src/types/cubesat.ts';
 
 const REPOS_ROOT = path.resolve(process.cwd(), 'data', 'forgejo-repos');
 
@@ -514,4 +521,596 @@ export function recordProjectChangeToForgejo(opts: ProjectForgejoSyncOptions): F
 
   return commit;
 }
+
+// ==========================
+// FORGEJO ACTIONS (TEAM CI/CD)
+// ==========================
+function readActionsFile(repoDir: string): CiWorkflowRun[] {
+  const file = path.join(repoDir, '.forgejo-actions.json');
+  try {
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as CiWorkflowRun[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // ignore corrupt actions log
+  }
+  return [];
+}
+
+function writeActionsFile(repoDir: string, runs: CiWorkflowRun[]) {
+  const file = path.join(repoDir, '.forgejo-actions.json');
+  fs.writeFileSync(file, JSON.stringify(runs.slice(0, 50), null, 2), 'utf-8');
+}
+
+function sanitizeActionRunId(raw: string): string {
+  const clean = raw.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!clean) throw new Error('Некорректный идентификатор запуска Forgejo Actions');
+  return clean;
+}
+
+function runRealForgejoChecks(
+  repo: string,
+  workflowName: string,
+  projectName = repo
+): {
+  conclusion: 'success' | 'failure';
+  durationSec: number;
+  steps: CiJobStep[];
+  errorSummary?: string;
+} {
+  const startedAt = Date.now();
+  const tree = listForgejoTree(repo);
+  const paths = new Set(tree.map((f) => f.path));
+  const hasCoreFiles = paths.has('index.md') && paths.has('schema.md') && paths.has('log.md');
+
+  const existingTargets = new Set(tree.map((f) => f.path.replace(/\.md$/, '')));
+  const brokenLinks: { file: string; target: string }[] = [];
+  for (const entry of tree) {
+    if (entry.path === 'project/chat.md') continue;
+    const { content } = readForgejoFile(repo, entry.path);
+    const cleaned = content
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`[^`]*`/g, '');
+    const regex = /\[\[([^\]|#]+)(?:#[^\]]*)?(?:\|[^\]]*)?\]\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(cleaned)) !== null) {
+      const target = match[1].trim().replace(/\.md$/, '');
+      if (!existingTargets.has(target)) {
+        brokenLinks.push({ file: entry.path, target });
+      }
+    }
+  }
+
+  const hasProjectDocs =
+    paths.has('README.md') ||
+    paths.has('project/overview.md') ||
+    tree.some((f) => f.path.startsWith('subsystems/') || f.path.startsWith('concepts/'));
+
+  const step1: CiJobStep = {
+    name: `Checkout school76/${repo}`,
+    status: 'completed',
+    conclusion: tree.length > 0 ? 'success' : 'failure',
+    durationSec: 2,
+    logLine: `Получено ${tree.length} Markdown-файлов репозитория «${projectName}».`,
+  };
+
+  const step2: CiJobStep = {
+    name: 'Проверка структуры и ссылок llm-wiki',
+    status: 'completed',
+    conclusion: hasCoreFiles && brokenLinks.length === 0 ? 'success' : 'failure',
+    durationSec: 5,
+    logLine: !hasCoreFiles
+      ? 'Отсутствуют базовые файлы index.md / schema.md / log.md.'
+      : brokenLinks.length > 0
+        ? `Найдены битые ссылки (${brokenLinks.length}): ${brokenLinks
+            .slice(0, 3)
+            .map((b) => `${b.file} -> [[${b.target}]]`)
+            .join(', ')}`
+        : `Проверено ${tree.length} документов: структура целостная, 0 битых ссылок.`,
+  };
+
+  const step3: CiJobStep = {
+    name: `Сборка артефактов (${workflowName})`,
+    status: 'completed',
+    conclusion: hasProjectDocs ? 'success' : 'failure',
+    durationSec: 7,
+    logLine: hasProjectDocs
+      ? 'Документация и спецификации подсистем готовы к публикации.'
+      : 'Добавьте README.md или описание подсистем в репозиторий проекта.',
+  };
+
+  const steps = [step1, step2, step3];
+  const failedStep = steps.find((s) => s.conclusion === 'failure');
+  const durationSec = Math.max(4, Math.round((Date.now() - startedAt) / 1000) + 12);
+
+  return {
+    conclusion: failedStep ? 'failure' : 'success',
+    durationSec,
+    steps,
+    errorSummary: failedStep?.logLine,
+  };
+}
+
+export function ensureForgejoActions(
+  repo: string,
+  projectName = repo,
+  projectId?: string
+): CiWorkflowRun[] {
+  ensureForgejoRepo(repo, projectName);
+  const cleanRepo = safeRepoName(repo);
+  const repoDir = resolveRepoDir(cleanRepo);
+  const existing = readActionsFile(repoDir);
+  if (existing.length > 0) {
+    return existing;
+  }
+
+  const commits = getForgejoCommits(cleanRepo);
+  const headSha = commits[0]?.sha?.slice(0, 7) || sha1Hex(cleanRepo).slice(0, 7);
+  const now = Date.now();
+  const iso = (offsetMin: number) => new Date(now - offsetMin * 60_000).toISOString();
+
+  const seeded: CiWorkflowRun[] =
+    cleanRepo === 'school76-1u'
+      ? [
+          {
+            id: 'fg-1u-14',
+            provider: 'forgejo',
+            repo: `school76/${cleanRepo}`,
+            projectId: projectId || 'school76-1u',
+            projectName,
+            workflowName: 'cubesat-telemetry-ci.yml',
+            runNumber: 14,
+            runAttempt: 1,
+            title: 'Проверка допусков B-dot и профилей энергобюджета EPS',
+            branch: 'main',
+            commitSha: headSha,
+            event: 'push',
+            actor: 'Мария Волкова',
+            status: 'completed',
+            conclusion: 'failure',
+            createdAt: iso(18),
+            updatedAt: iso(17),
+            durationSec: 24,
+            canRerun: true,
+            errorSummary: 'Порог угловой скорости ADCS в тестовом профиле превысил 2.0 °/с (ожидается калибровка стенда).',
+            steps: [
+              {
+                name: 'Checkout school76/school76-1u',
+                status: 'completed',
+                conclusion: 'success',
+                durationSec: 3,
+                logLine: 'Репозиторий загружен (HEAD ' + headSha + ').',
+              },
+              {
+                name: 'Проверка структуры и ссылок llm-wiki',
+                status: 'completed',
+                conclusion: 'success',
+                durationSec: 6,
+                logLine: 'Все внутренние ссылки [[...]] прошли валидацию.',
+              },
+              {
+                name: 'Сборка и тест профилей B-dot / EPS',
+                status: 'completed',
+                conclusion: 'failure',
+                durationSec: 15,
+                logLine: 'FAIL: Демпфирование B-dot не сошлось за отведённое окно орбиты; перезапустите после обновления конфигурации.',
+              },
+            ],
+          },
+          {
+            id: 'fg-1u-13',
+            provider: 'forgejo',
+            repo: `school76/${cleanRepo}`,
+            projectId: projectId || 'school76-1u',
+            projectName,
+            workflowName: 'llm-wiki-lint.yml',
+            runNumber: 13,
+            runAttempt: 1,
+            title: 'Автопроверка целостности базы знаний llm-wiki',
+            branch: 'main',
+            commitSha: commits[1]?.sha?.slice(0, 7) || headSha,
+            event: 'push',
+            actor: 'Артём Соколов',
+            status: 'completed',
+            conclusion: 'success',
+            createdAt: iso(95),
+            updatedAt: iso(94),
+            durationSec: 14,
+            canRerun: false,
+            steps: [
+              {
+                name: 'Checkout school76/school76-1u',
+                status: 'completed',
+                conclusion: 'success',
+                durationSec: 2,
+                logLine: 'Получены файлы базы знаний.',
+              },
+              {
+                name: 'Индексация index.md и ссылок [[...]]',
+                status: 'completed',
+                conclusion: 'success',
+                durationSec: 12,
+                logLine: 'Проверено 9 документов: битых ссылок не обнаружено.',
+              },
+            ],
+          },
+          {
+            id: 'fg-1u-12',
+            provider: 'forgejo',
+            repo: `school76/${cleanRepo}`,
+            projectId: projectId || 'school76-1u',
+            projectName,
+            workflowName: 'stm32-firmware-check.yml',
+            runNumber: 12,
+            runAttempt: 1,
+            title: 'Статический анализ бортового ПО OBC / COMMS',
+            branch: 'main',
+            commitSha: commits[2]?.sha?.slice(0, 7) || headSha,
+            event: 'workflow_dispatch',
+            actor: 'Дмитрий Орлов',
+            status: 'completed',
+            conclusion: 'success',
+            createdAt: iso(240),
+            updatedAt: iso(239),
+            durationSec: 31,
+            canRerun: false,
+          },
+        ]
+      : cleanRepo === 'ground-sdr'
+        ? [
+            {
+              id: 'fg-sdr-8',
+              provider: 'forgejo',
+              repo: `school76/${cleanRepo}`,
+              projectId: projectId || 'ground-sdr',
+              projectName,
+              workflowName: 'sdr-decoder-ci.yml',
+              runNumber: 8,
+              runAttempt: 1,
+              title: 'Тест приёма кадров AX.25 (435.800 МГц)',
+              branch: 'main',
+              commitSha: headSha,
+              event: 'push',
+              actor: 'Дмитрий Орлов',
+              status: 'completed',
+              conclusion: 'failure',
+              createdAt: iso(35),
+              updatedAt: iso(34),
+              durationSec: 19,
+              canRerun: true,
+              errorSummary: 'Контрольная сумма тестового пакета AX.25 отклонена на частоте 435.800 МГц.',
+              steps: [
+                {
+                  name: 'Checkout school76/ground-sdr',
+                  status: 'completed',
+                  conclusion: 'success',
+                  durationSec: 2,
+                  logLine: 'Файлы наземной станции загружены.',
+                },
+                {
+                  name: 'Валидация декодера AX.25 UI-frame',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  durationSec: 17,
+                  logLine: 'FAIL: Ошибка CRC-16 в тестовом семпле приёмника SDR.',
+                },
+              ],
+            },
+            {
+              id: 'fg-sdr-7',
+              provider: 'forgejo',
+              repo: `school76/${cleanRepo}`,
+              projectId: projectId || 'ground-sdr',
+              projectName,
+              workflowName: 'llm-wiki-lint.yml',
+              runNumber: 7,
+              runAttempt: 1,
+              title: 'Проверка документации наземного сегмента',
+              branch: 'main',
+              commitSha: headSha,
+              event: 'push',
+              actor: 'Артём Соколов',
+              status: 'completed',
+              conclusion: 'success',
+              createdAt: iso(160),
+              updatedAt: iso(159),
+              durationSec: 11,
+              canRerun: false,
+            },
+          ]
+        : [
+            {
+              id: `fg-${cleanRepo}-2`,
+              provider: 'forgejo',
+              repo: `school76/${cleanRepo}`,
+              projectId,
+              projectName,
+              workflowName: 'project-ci-check.yml',
+              runNumber: 2,
+              runAttempt: 1,
+              title: `Первичная проверка репозитория команды «${projectName}»`,
+              branch: 'main',
+              commitSha: headSha,
+              event: 'push',
+              actor: 'Система Forgejo CI',
+              status: 'completed',
+              conclusion: 'failure',
+              createdAt: iso(10),
+              updatedAt: iso(9),
+              durationSec: 12,
+              canRerun: true,
+              errorSummary: 'Требуется повторная проверка документации после инициализации проекта.',
+              steps: [
+                {
+                  name: `Checkout school76/${cleanRepo}`,
+                  status: 'completed',
+                  conclusion: 'success',
+                  durationSec: 2,
+                  logLine: 'Репозиторий команды создан.',
+                },
+                {
+                  name: 'Проверка README.md и структуры llm-wiki',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  durationSec: 10,
+                  logLine: 'Ожидается подтверждение документации проекта.',
+                },
+              ],
+            },
+            {
+              id: `fg-${cleanRepo}-1`,
+              provider: 'forgejo',
+              repo: `school76/${cleanRepo}`,
+              projectId,
+              projectName,
+              workflowName: 'llm-wiki-init.yml',
+              runNumber: 1,
+              runAttempt: 1,
+              title: 'Инициализация структуры llm-wiki',
+              branch: 'main',
+              commitSha: headSha,
+              event: 'push',
+              actor: 'Система Forgejo CI',
+              status: 'completed',
+              conclusion: 'success',
+              createdAt: iso(15),
+              updatedAt: iso(14),
+              durationSec: 8,
+              canRerun: false,
+            },
+          ];
+
+  writeActionsFile(repoDir, seeded);
+  return seeded;
+}
+
+export async function listForgejoActionRuns(
+  repo: string,
+  projectName = repo,
+  projectId?: string
+): Promise<{
+  repo: string;
+  externalConfigured: boolean;
+  runs: CiWorkflowRun[];
+}> {
+  const cleanRepo = safeRepoName(repo);
+  const baseUrl = process.env.FORGEJO_URL?.trim();
+  const token = process.env.FORGEJO_TOKEN?.trim();
+  const owner = process.env.FORGEJO_OWNER?.trim() || 'school76';
+
+  if (baseUrl && token) {
+    try {
+      const endpoint = `${baseUrl.replace(/\/+$/, '')}/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(cleanRepo)}/actions/runs?limit=15`;
+      const response = await fetch(endpoint, {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { workflow_runs?: Record<string, any>[] } | Record<string, any>[];
+        const rawList = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.workflow_runs)
+            ? data.workflow_runs
+            : null;
+        if (rawList) {
+          const mapped: CiWorkflowRun[] = rawList.map((r, idx) => {
+            const status: CiRunStatus =
+              r.status === 'queued' || r.status === 'waiting'
+                ? 'queued'
+                : r.status === 'in_progress' || r.status === 'running'
+                  ? 'in_progress'
+                  : 'completed';
+            const conclusion: CiRunConclusion =
+              r.conclusion === 'success' ||
+              r.conclusion === 'failure' ||
+              r.conclusion === 'cancelled' ||
+              r.conclusion === 'timed_out'
+                ? r.conclusion
+                : status === 'completed'
+                  ? 'success'
+                  : null;
+            return {
+              id: String(r.id ?? `ext-${idx}`),
+              provider: 'forgejo',
+              repo: `${owner}/${cleanRepo}`,
+              projectId,
+              projectName,
+              workflowName: String(r.name || r.workflow_id || 'forgejo-ci.yml'),
+              runNumber: Number(r.run_number || idx + 1),
+              runAttempt: Number(r.run_attempt || 1),
+              title: String(r.display_title || r.title || 'Forgejo Actions Run'),
+              branch: String(r.head_branch || 'main'),
+              commitSha: String(r.head_sha || '').slice(0, 7),
+              event: String(r.event || 'push'),
+              actor: String(r.actor?.login || owner),
+              status,
+              conclusion,
+              createdAt: String(r.created_at || new Date().toISOString()),
+              updatedAt: String(r.updated_at || new Date().toISOString()),
+              canRerun:
+                status === 'completed' &&
+                (conclusion === 'failure' || conclusion === 'cancelled' || conclusion === 'timed_out'),
+            };
+          });
+          return {
+            repo: `${owner}/${cleanRepo}`,
+            externalConfigured: true,
+            runs: mapped,
+          };
+        }
+      }
+    } catch {
+      // Fall back to embedded Forgejo Actions store
+    }
+  }
+
+  const runs = ensureForgejoActions(cleanRepo, projectName, projectId).map((run) => ({
+    ...run,
+    projectId: run.projectId || projectId,
+    projectName: run.projectName || projectName,
+  }));
+
+  return {
+    repo: `school76/${cleanRepo}`,
+    externalConfigured: Boolean(baseUrl && token),
+    runs,
+  };
+}
+
+export async function rerunForgejoActionRun(
+  repo: string,
+  rawRunId: string,
+  author: string,
+  projectMeta?: { projectName?: string; projectId?: string }
+): Promise<CiWorkflowRun> {
+  const cleanRepo = safeRepoName(repo);
+  const runId = sanitizeActionRunId(rawRunId);
+  const projectName = projectMeta?.projectName || cleanRepo;
+
+  const baseUrl = process.env.FORGEJO_URL?.trim();
+  const token = process.env.FORGEJO_TOKEN?.trim();
+  const owner = process.env.FORGEJO_OWNER?.trim() || 'school76';
+
+  if (baseUrl && token) {
+    try {
+      const endpoint = `${baseUrl.replace(/\/+$/, '')}/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(cleanRepo)}/actions/runs/${encodeURIComponent(runId)}/rerun`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (response.ok) {
+        const list = await listForgejoActionRuns(cleanRepo, projectName, projectMeta?.projectId);
+        const found = list.runs.find((r) => r.id === runId);
+        if (found) return found;
+      }
+    } catch {
+      // Fall through to embedded Forgejo runner
+    }
+  }
+
+  ensureForgejoActions(cleanRepo, projectName, projectMeta?.projectId);
+  const repoDir = resolveRepoDir(cleanRepo);
+  const runs = readActionsFile(repoDir);
+  const idx = runs.findIndex((r) => r.id === runId);
+  if (idx === -1) {
+    throw new Error('Запуск сборки Forgejo Actions не найден');
+  }
+
+  const target = runs[idx];
+  const checkResult = runRealForgejoChecks(cleanRepo, target.workflowName, projectName);
+  const nowIso = new Date().toISOString();
+
+  const updatedRun: CiWorkflowRun = {
+    ...target,
+    projectId: target.projectId || projectMeta?.projectId,
+    projectName,
+    runAttempt: (target.runAttempt || 1) + 1,
+    actor: author.trim() || target.actor,
+    status: 'completed',
+    conclusion: checkResult.conclusion,
+    updatedAt: nowIso,
+    durationSec: checkResult.durationSec,
+    steps: checkResult.steps,
+    errorSummary: checkResult.errorSummary,
+    canRerun: checkResult.conclusion === 'failure',
+  };
+
+  runs[idx] = updatedRun;
+  writeActionsFile(repoDir, runs);
+
+  // Append CI rerun record to Forgejo llm-wiki log.md
+  try {
+    const logFile = readForgejoFile(cleanRepo, 'log.md');
+    const stamp = nowIso.replace('T', ' ').slice(0, 16);
+    const statusWord = checkResult.conclusion === 'success' ? 'УСПЕХ' : 'ОШИБКА';
+    const logLine = `- **${stamp} [CI-RERUN]:** Перезапуск сборки \`${updatedRun.workflowName}\` #${updatedRun.runNumber} (попытка ${updatedRun.runAttempt}) — ${statusWord} (${author}).`;
+    await writeForgejoFile(
+      cleanRepo,
+      'log.md',
+      `${logFile.content.trimEnd()}\n${logLine}\n`,
+      `[CI] Rerun ${updatedRun.workflowName} #${updatedRun.runNumber}`,
+      author
+    );
+  } catch {
+    // Non-fatal if log.md append fails
+  }
+
+  return updatedRun;
+}
+
+export async function dispatchForgejoActionRun(
+  repo: string,
+  workflowName: string,
+  author: string,
+  projectMeta?: { projectName?: string; projectId?: string }
+): Promise<CiWorkflowRun> {
+  const cleanRepo = safeRepoName(repo);
+  const projectName = projectMeta?.projectName || cleanRepo;
+  ensureForgejoActions(cleanRepo, projectName, projectMeta?.projectId);
+
+  const repoDir = resolveRepoDir(cleanRepo);
+  const runs = readActionsFile(repoDir);
+  const commits = getForgejoCommits(cleanRepo);
+  const headSha = commits[0]?.sha?.slice(0, 7) || sha1Hex(cleanRepo).slice(0, 7);
+  const nextNumber = runs.reduce((max, r) => Math.max(max, r.runNumber || 0), 0) + 1;
+  const safeWorkflow =
+    workflowName.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 64) || 'project-ci-check.yml';
+
+  const checkResult = runRealForgejoChecks(cleanRepo, safeWorkflow, projectName);
+  const nowIso = new Date().toISOString();
+
+  const newRun: CiWorkflowRun = {
+    id: `fg-${cleanRepo}-${nextNumber}-${Date.now().toString(36)}`,
+    provider: 'forgejo',
+    repo: `school76/${cleanRepo}`,
+    projectId: projectMeta?.projectId,
+    projectName,
+    workflowName: safeWorkflow,
+    runNumber: nextNumber,
+    runAttempt: 1,
+    title: `Ручной запуск проверки для «${projectName}»`,
+    branch: 'main',
+    commitSha: headSha,
+    event: 'workflow_dispatch',
+    actor: author.trim() || 'Инженер school76',
+    status: 'completed',
+    conclusion: checkResult.conclusion,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    durationSec: checkResult.durationSec,
+    steps: checkResult.steps,
+    errorSummary: checkResult.errorSummary,
+    canRerun: checkResult.conclusion === 'failure',
+  };
+
+  writeActionsFile(repoDir, [newRun, ...runs]);
+  return newRun;
+}
+
 

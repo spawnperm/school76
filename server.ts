@@ -26,14 +26,18 @@ import { PRESET_PROGRAMS } from './src/mblock/presets.ts';
 import { hashPassword, signSessionToken, verifyPassword, verifySessionToken } from './server/auth.ts';
 import {
   deleteForgejoFile,
+  dispatchForgejoActionRun,
+  ensureForgejoActions,
   ensureForgejoRepo,
   getForgejoCommits,
   hasForgejoFile,
   ingestSourceToWiki,
   lintForgejoWiki,
+  listForgejoActionRuns,
   listForgejoTree,
   readForgejoFile,
   recordProjectChangeToForgejo,
+  rerunForgejoActionRun,
   writeForgejoFile,
 } from './server/forgejoStore.ts';
 import {
@@ -43,7 +47,13 @@ import {
   listGarageObjects,
   putGarageObject,
 } from './server/garageS3.ts';
-import { commitAndPushToGitHub, getGitHubStatus } from './server/githubSync.ts';
+import {
+  commitAndPushToGitHub,
+  getGitHubStatus,
+  listGitHubWorkflowRuns,
+  rerunGitHubWorkflowRun,
+  sanitizeGitHubRepo,
+} from './server/githubSync.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -735,6 +745,7 @@ async function startServer() {
 
   for (const proj of state.projects) {
     ensureForgejoRepo(proj.forgejoRepo, proj.name);
+    ensureForgejoActions(proj.forgejoRepo, proj.name, proj.id);
     ensureGarageBucket(proj.s3Bucket);
     if (!hasForgejoFile(proj.forgejoRepo, 'project/overview.md')) {
       syncOverviewToForgejo(proj, 'PROJECT', `Инициализация рабочего пространства «${proj.name}»`, 'Система school76');
@@ -967,6 +978,16 @@ async function startServer() {
           .slice(0, 6)
       : [];
 
+    let githubRepo = '';
+    if (req.body?.githubRepo) {
+      try {
+        githubRepo = sanitizeGitHubRepo(req.body.githubRepo);
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : 'Некорректный GitHub-репозиторий' });
+        return;
+      }
+    }
+
     const project: CommunityProject = {
       id: slug,
       slug,
@@ -977,6 +998,7 @@ async function startServer() {
       ownerId: currentUser.id,
       memberIds: [currentUser.id],
       forgejoRepo: slug,
+      ...(githubRepo ? { githubRepo } : {}),
       s3Bucket: 'school76-media',
       createdAt: new Date().toISOString(),
     };
@@ -986,6 +1008,7 @@ async function startServer() {
     }
 
     ensureForgejoRepo(project.forgejoRepo, project.name);
+    ensureForgejoActions(project.forgejoRepo, project.name, project.id);
     ensureGarageBucket(project.s3Bucket);
 
     state.projects.unshift(project);
@@ -998,6 +1021,39 @@ async function startServer() {
     );
     broadcastSocialSync();
     res.status(201).json({ project });
+  });
+
+  app.patch('/api/projects/:id', requireAuth, (req, res) => {
+    const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
+    const project = state.projects.find((p) => p.id === req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Проект не найден' });
+      return;
+    }
+    const isTeamMember =
+      project.ownerId === currentUser.id || project.memberIds.includes(currentUser.id);
+    if (!isTeamMember) {
+      res.status(403).json({ error: 'Вступите в команду проекта, чтобы изменять настройки репозитория' });
+      return;
+    }
+
+    if (req.body?.githubRepo !== undefined) {
+      try {
+        const cleaned = sanitizeGitHubRepo(req.body.githubRepo);
+        if (cleaned) {
+          project.githubRepo = cleaned;
+        } else {
+          delete project.githubRepo;
+        }
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : 'Некорректный GitHub-репозиторий' });
+        return;
+      }
+    }
+
+    saveState(state);
+    broadcastSocialSync();
+    res.json({ project });
   });
 
   app.post('/api/projects/:id/join', requireAuth, (req, res) => {
@@ -1525,6 +1581,75 @@ ${recentCommitsText}`;
     }
   });
 
+  app.get('/api/v1/repos/school76/:repo/actions/runs', async (req, res) => {
+    try {
+      const matchedProject = state.projects.find((p) => p.forgejoRepo === req.params.repo);
+      const data = await listForgejoActionRuns(
+        req.params.repo,
+        matchedProject?.name || req.params.repo,
+        matchedProject?.id
+      );
+      res.json(data);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Forgejo Actions error' });
+    }
+  });
+
+  app.get('/api/forgejo/actions/runs', async (req, res) => {
+    try {
+      const filterProjectId =
+        typeof req.query.projectId === 'string' ? req.query.projectId.trim() : '';
+      const targetProjects = filterProjectId
+        ? state.projects.filter((p) => p.id === filterProjectId)
+        : state.projects;
+      const results = await Promise.all(
+        targetProjects.map((proj) => listForgejoActionRuns(proj.forgejoRepo, proj.name, proj.id))
+      );
+      const runs = results
+        .flatMap((r) => r.runs)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      res.json({
+        externalConfigured: results.some((r) => r.externalConfigured),
+        runs,
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Forgejo Actions error' });
+    }
+  });
+
+  app.post('/api/v1/repos/school76/:repo/actions/runs/:runId/rerun', requireAuth, async (req, res) => {
+    try {
+      const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
+      const matchedProject = state.projects.find((p) => p.forgejoRepo === req.params.repo);
+      const run = await rerunForgejoActionRun(
+        req.params.repo,
+        req.params.runId,
+        currentUser.displayName,
+        { projectName: matchedProject?.name, projectId: matchedProject?.id }
+      );
+      res.json({ ok: true, run });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Forgejo rerun failed' });
+    }
+  });
+
+  app.post('/api/v1/repos/school76/:repo/actions/dispatch', requireAuth, async (req, res) => {
+    try {
+      const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
+      const matchedProject = state.projects.find((p) => p.forgejoRepo === req.params.repo);
+      const workflowName = clampStr(req.body?.workflowName, 64, 'project-ci-check.yml');
+      const run = await dispatchForgejoActionRun(
+        req.params.repo,
+        workflowName,
+        currentUser.displayName,
+        { projectName: matchedProject?.name, projectId: matchedProject?.id }
+      );
+      res.status(201).json({ ok: true, run });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Forgejo dispatch failed' });
+    }
+  });
+
   app.post('/api/wiki/:repo/ingest', requireAuth, async (req, res) => {
     try {
       const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
@@ -1648,11 +1773,36 @@ ${recentCommitsText}`;
         __dirname,
         req.body?.message,
         currentUser.displayName,
-        `${currentUser.username}@school76.local`
+        `${currentUser.username}@school76.local`,
+        req.body?.token
       );
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub push failed' });
+    }
+  });
+
+  app.get('/api/github/actions/runs', async (req, res) => {
+    try {
+      const headerToken = req.header('x-github-token') || undefined;
+      const data = await listGitHubWorkflowRuns(__dirname, req.query.repo, headerToken);
+      res.json(data);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub Actions error' });
+    }
+  });
+
+  app.post('/api/github/actions/runs/:runId/rerun', requireAuth, async (req, res) => {
+    try {
+      const result = await rerunGitHubWorkflowRun(
+        __dirname,
+        req.params.runId,
+        req.body?.repo,
+        req.body?.token
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub Actions rerun failed' });
     }
   });
 

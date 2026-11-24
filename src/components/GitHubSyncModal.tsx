@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
+  Eye,
+  EyeOff,
   GitBranch,
   GitCommit,
+  KeyRound,
   RefreshCw,
   UploadCloud,
   X,
@@ -43,6 +46,8 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({
   const [status, setStatus] = useState<GitHubStatusPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -69,6 +74,9 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({
       setSuccessMsg(null);
       setError(null);
       loadStatus();
+    } else {
+      setGithubToken('');
+      setShowToken(false);
     }
   }, [isOpen, loadStatus]);
 
@@ -80,6 +88,11 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({
       onRequireAuth();
       return;
     }
+    const trimmedToken = githubToken.trim();
+    if (status && !status.tokenConfigured && !trimmedToken) {
+      setError('Введите ключ доступа GitHub (Personal Access Token) для отправки изменений');
+      return;
+    }
     setPushing(true);
     setError(null);
     setSuccessMsg(null);
@@ -88,6 +101,7 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({
         method: 'POST',
         body: JSON.stringify({
           message: commitMessage.trim() || 'chore: update school76 workspace',
+          ...(trimmedToken ? { token: trimmedToken } : {}),
         }),
       });
       setSuccessMsg(
@@ -181,7 +195,7 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({
 
           {status && !status.tokenConfigured && (
             <div className="px-3 py-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md">
-              Для автоматического <span className="font-mono">git push</span> на GitHub укажите <span className="font-mono font-semibold">GITHUB_TOKEN</span> в настройках Secrets сервера.
+              Переменная <span className="font-mono font-semibold">GITHUB_TOKEN</span> на сервере не задана — укажите ключ доступа ниже, чтобы выполнить <span className="font-mono">git push</span>.
             </div>
           )}
 
@@ -222,6 +236,51 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({
               placeholder="feat: обновление документации и модулей school76"
               className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label
+                htmlFor="github-pat-input"
+                className="flex items-center gap-1.5 text-xs font-medium text-slate-700"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-slate-500" />
+                <span>Ключ доступа GitHub (PAT)</span>
+              </label>
+              {status?.tokenConfigured && (
+                <span className="text-[11px] text-emerald-700">
+                  Настроен на сервере (можно переопределить)
+                </span>
+              )}
+            </div>
+            <div className="relative">
+              <input
+                id="github-pat-input"
+                type={showToken ? 'text' : 'password'}
+                value={githubToken}
+                onChange={(e) => setGithubToken(e.target.value)}
+                placeholder={
+                  status?.tokenConfigured
+                    ? 'Оставьте пустым для использования ключа сервера'
+                    : 'ghp_... или github_pat_...'
+                }
+                autoComplete="off"
+                spellCheck={false}
+                className="w-full pl-3 pr-9 py-2 text-sm font-mono border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowToken((prev) => !prev)}
+                className="absolute inset-y-0 right-0 px-2.5 flex items-center text-slate-400 hover:text-slate-700"
+                aria-label={showToken ? 'Скрыть ключ' : 'Показать ключ'}
+                title={showToken ? 'Скрыть ключ' : 'Показать ключ'}
+              >
+                {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Используется только для текущей отправки и не сохраняется на диске или в истории браузера.
+            </p>
           </div>
 
           <div className="flex items-center justify-between gap-3 pt-2">
