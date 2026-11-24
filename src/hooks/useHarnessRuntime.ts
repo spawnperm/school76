@@ -217,6 +217,53 @@ export function useHarnessRuntime() {
     []
   );
 
+  const syncVerdaccio = useCallback(async (): Promise<void> => {
+    setBusyAction('verdaccio:sync');
+    setError(null);
+    try {
+      const res = await fetch('/api/verdaccio/sync', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Ошибка синхронизации Verdaccio');
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка синхронизации Verdaccio');
+    } finally {
+      setBusyAction(null);
+    }
+  }, [refresh]);
+
+  const publishToVerdaccio = useCallback(
+    async (payload: {
+      name: string;
+      version: string;
+      description: string;
+      subsystem?: string;
+      bundle?: 'dsh-base' | 'dsh-cubesat' | 'dsh-devops' | 'dsh-collab';
+      dshTools?: string[];
+    }): Promise<boolean> => {
+      setBusyAction('verdaccio:publish');
+      setError(null);
+      try {
+        const res = await fetch('/api/verdaccio/publish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Ошибка публикации пакета в Verdaccio');
+        if (data.marketplace) setMarketplace(data.marketplace as MarketplaceSnapshot);
+        if (data.snapshot) setSnapshot(data.snapshot as HarnessRuntimeSnapshot);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ошибка публикации в Verdaccio');
+        return false;
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    []
+  );
+
   return {
     snapshot,
     marketplace,
@@ -233,6 +280,8 @@ export function useHarnessRuntime() {
     uninstallMarketplaceModule,
     activateMarketplaceModule,
     deactivateMarketplaceModule,
+    publishToVerdaccio,
+    syncVerdaccio,
     executeTool,
     runAgentGoal,
   };

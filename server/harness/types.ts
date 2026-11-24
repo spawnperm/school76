@@ -102,6 +102,13 @@ export interface AgentLoopService {
   getHistory: () => HarnessAgentRunResult[];
 }
 
+export interface RegistryService {
+  driver: string;
+  getOverview: () => unknown;
+  search: (query?: string) => unknown[];
+  getPackage: (name: string) => unknown;
+}
+
 export interface ServerHarnessServices extends Record<string, unknown> {
   store: StoreService;
   forge: ForgeService;
@@ -111,5 +118,6 @@ export interface ServerHarnessServices extends Record<string, unknown> {
   tools: ToolsService;
   llm: LlmService;
   agent: AgentLoopService;
+  registry: RegistryService;
   uiSlots: Record<string, boolean>;
 }

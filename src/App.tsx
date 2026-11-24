@@ -258,6 +258,8 @@ export default function App() {
             onUninstallModule={harness.uninstallMarketplaceModule}
             onActivateModule={harness.activateMarketplaceModule}
             onDeactivateModule={harness.deactivateMarketplaceModule}
+            onPublishToVerdaccio={harness.publishToVerdaccio}
+            onSyncVerdaccio={harness.syncVerdaccio}
             onOpenTab={(tab) => setActiveTab(tab)}
           />
         )}

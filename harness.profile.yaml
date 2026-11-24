@@ -38,6 +38,14 @@ seams:
     description: Model-callable tool registry over live CubeSat subsystems
     providers:
       - dsh-tools-cubesat
+      - dsh-telemetry-ax25
+      - dsh-hil-validator
+      - dsh-orbit-sgp4
+      - dsh-alerts-watchdog
+  dsh-registry:
+    description: Private Verdaccio npm registry storing dsh module tarballs and packuments
+    providers:
+      - dsh-registry-verdaccio
 
 profiles:
   cubesat-full:

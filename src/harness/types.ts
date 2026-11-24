@@ -130,6 +130,52 @@ export type MarketplaceCategory = 'device' | 'portal' | 'extension';
 
 export type MakeblockBoardProfileId = 'auriga_stm32' | 'codey_esp32' | 'gizduino_avr';
 
+export interface VerdaccioDistMeta {
+  shasum: string;
+  integrity: string;
+  tarball: string;
+  fileCount: number;
+  unpackedSize: number;
+  tarballBytes: number;
+}
+
+export interface VerdaccioPackageRecord {
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  license: string;
+  keywords: string[];
+  distTags: Record<string, string>;
+  dshPluginId?: string;
+  marketplaceModuleId?: string;
+  subsystem: string;
+  bundle: HarnessBundleId;
+  dshTools: string[];
+  dependencies: Record<string, string>;
+  dist: VerdaccioDistMeta;
+  publishedAt: string;
+  updatedAt: string;
+  downloads: number;
+  readme: string;
+  source: 'seeded' | 'published';
+}
+
+export interface VerdaccioRegistryOverview {
+  engine: string;
+  registryUrl: string;
+  upstreamMode: 'embedded-local' | 'external-upstream';
+  externalUrl?: string;
+  externalReachable?: boolean;
+  totalPackages: number;
+  totalTarballs: number;
+  totalBytes: number;
+  totalDownloads: number;
+  storageDir: string;
+  updatedAt: string;
+  packages: VerdaccioPackageRecord[];
+}
+
 export interface MarketplaceModuleDescriptor {
   id: string;
   name: string;
@@ -147,6 +193,8 @@ export interface MarketplaceModuleDescriptor {
   protocol?: string;
   cordisPlugins?: string[];
   seamBinding?: { seamId: string; providerId: string };
+  verdaccioPackage?: string;
+  dshTools?: string[];
   mblockExtensionId?: string;
   toolboxCategoryName?: string;
   recommendedExtensions?: string[];
@@ -159,13 +207,18 @@ export interface MarketplaceModuleState {
   installedAt?: string;
 }
 
-export type MarketplaceEntry = MarketplaceModuleDescriptor & MarketplaceModuleState;
+export type MarketplaceEntry = MarketplaceModuleDescriptor &
+  MarketplaceModuleState & {
+    verdaccio?: VerdaccioPackageRecord;
+  };
 
 export interface MarketplaceSnapshot {
   activeDeviceId: string;
   activeBoardProfile: MakeblockBoardProfileId;
   activeMBlockExtensions: string[];
   modules: MarketplaceEntry[];
+  verdaccio?: VerdaccioRegistryOverview;
   updatedAt: string;
 }
+
 

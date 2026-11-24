@@ -9,6 +9,7 @@ import type {
   MarketplaceSnapshot,
 } from '../../src/harness/types.ts';
 import type { ServerHarnessServices } from './types.ts';
+import type { VerdaccioRegistryController } from '../verdaccioRegistry.ts';
 
 interface PersistedMarketplaceFile {
   activeDeviceId: string;
@@ -28,7 +29,8 @@ export interface MarketplaceController {
 
 export function createMarketplaceController(
   rootDir: string,
-  kernel: HarnessKernel<ServerHarnessServices>
+  kernel: HarnessKernel<ServerHarnessServices>,
+  verdaccio?: VerdaccioRegistryController
 ): MarketplaceController {
   const dataDir = path.join(rootDir, 'data');
   const filePath = path.join(dataDir, 'marketplace.json');
@@ -37,9 +39,33 @@ export function createMarketplaceController(
   let activeDeviceId = 'dev-auriga-stm32';
   let updatedAt = new Date().toISOString();
 
+  const getAllDescriptors = () => {
+    const knownVerdaccio = new Set(
+      MARKETPLACE_CATALOG.map((m) => m.verdaccioPackage).filter(Boolean) as string[]
+    );
+    const dynamicModules = (verdaccio?.listPackages() || [])
+      .filter((pkg) => !knownVerdaccio.has(pkg.name))
+      .map((pkg) => ({
+        id: pkg.marketplaceModuleId || `mod-verdaccio-${pkg.name.split('/').pop()}`,
+        name: pkg.name,
+        shortLabel: pkg.name.split('/').pop() || pkg.name,
+        category: 'portal' as const,
+        subsystem: pkg.subsystem || 'DSH · Verdaccio',
+        version: pkg.version,
+        author: pkg.author,
+        description: pkg.description,
+        defaultInstalled: false,
+        defaultActive: false,
+        cordisPlugins: pkg.dshPluginId ? [pkg.dshPluginId] : undefined,
+        verdaccioPackage: pkg.name,
+        dshTools: pkg.dshTools,
+      }));
+    return [...MARKETPLACE_CATALOG, ...dynamicModules];
+  };
+
   const initDefaults = () => {
     states.clear();
-    for (const desc of MARKETPLACE_CATALOG) {
+    for (const desc of getAllDescriptors()) {
       states.set(desc.id, {
         installed: desc.defaultInstalled,
         active: desc.defaultActive,
@@ -55,8 +81,9 @@ export function createMarketplaceController(
       if (!fs.existsSync(filePath)) return;
       const raw = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(raw) as Partial<PersistedMarketplaceFile>;
+      const descriptors = getAllDescriptors();
       if (parsed && parsed.modules && typeof parsed.modules === 'object') {
-        for (const desc of MARKETPLACE_CATALOG) {
+        for (const desc of descriptors) {
           const saved = parsed.modules[desc.id];
           if (saved && typeof saved.installed === 'boolean' && typeof saved.active === 'boolean') {
             states.set(desc.id, {
@@ -68,10 +95,10 @@ export function createMarketplaceController(
         }
       }
       if (typeof parsed.activeDeviceId === 'string') {
-        const dev = MARKETPLACE_CATALOG.find((m) => m.id === parsed.activeDeviceId && m.category === 'device');
+        const dev = descriptors.find((m) => m.id === parsed.activeDeviceId && m.category === 'device');
         if (dev) {
           activeDeviceId = dev.id;
-          for (const d of MARKETPLACE_CATALOG.filter((m) => m.category === 'device')) {
+          for (const d of descriptors.filter((m) => m.category === 'device')) {
             const st = states.get(d.id)!;
             states.set(d.id, {
               ...st,
@@ -109,7 +136,7 @@ export function createMarketplaceController(
   };
 
   const getDescriptor = (moduleId: string) => {
-    const desc = MARKETPLACE_CATALOG.find((m) => m.id === moduleId);
+    const desc = getAllDescriptors().find((m) => m.id === moduleId);
     if (!desc) {
       throw new Error(`Модуль Маркетплейса "${moduleId}" не найден`);
     }
@@ -146,7 +173,7 @@ export function createMarketplaceController(
   };
 
   const syncToKernel = () => {
-    for (const desc of MARKETPLACE_CATALOG) {
+    for (const desc of getAllDescriptors()) {
       if (desc.category !== 'portal') continue;
       const st = states.get(desc.id);
       if (!st) continue;
@@ -159,11 +186,16 @@ export function createMarketplaceController(
     const statusById = new Map(snap.plugins.map((p) => [p.id, p.status === 'active']));
     let changed = false;
 
-    for (const desc of MARKETPLACE_CATALOG) {
+    for (const desc of getAllDescriptors()) {
       if (desc.category !== 'portal' || !desc.cordisPlugins?.length) continue;
-      const allActive = desc.cordisPlugins.every((pid) => statusById.get(pid) === true);
-      const cur = states.get(desc.id);
-      if (cur && cur.active !== allActive) {
+      const knownPlugins = desc.cordisPlugins.filter((pid) => statusById.has(pid));
+      if (knownPlugins.length === 0) continue;
+      const allActive = knownPlugins.every((pid) => statusById.get(pid) === true);
+      const cur = states.get(desc.id) || {
+        installed: desc.defaultInstalled,
+        active: desc.defaultActive,
+      };
+      if (cur.active !== allActive) {
         states.set(desc.id, {
           installed: allActive ? true : cur.installed,
           active: allActive,
@@ -176,12 +208,17 @@ export function createMarketplaceController(
   };
 
   const getSnapshot = (): MarketplaceSnapshot => {
-    const modules: MarketplaceEntry[] = MARKETPLACE_CATALOG.map((desc) => {
+    const modules: MarketplaceEntry[] = getAllDescriptors().map((desc) => {
       const st = states.get(desc.id) || {
         installed: desc.defaultInstalled,
         active: desc.defaultActive,
       };
-      return { ...desc, ...st };
+      const pkg = desc.verdaccioPackage ? verdaccio?.getPackage(desc.verdaccioPackage) || undefined : undefined;
+      return {
+        ...desc,
+        ...st,
+        ...(pkg ? { verdaccio: pkg } : {}),
+      };
     });
 
     const activeDevice =
@@ -201,6 +238,7 @@ export function createMarketplaceController(
       activeBoardProfile,
       activeMBlockExtensions,
       modules,
+      verdaccio: verdaccio?.getOverview(),
       updatedAt,
     };
   };
@@ -213,6 +251,9 @@ export function createMarketplaceController(
       installed: true,
       installedAt: cur.installedAt || new Date().toISOString(),
     });
+    if (desc.verdaccioPackage) {
+      verdaccio?.recordDownload(desc.verdaccioPackage);
+    }
     kernel.recordEvent(
       'plugin:mount',
       `marketplace:${desc.id}`,
@@ -227,7 +268,7 @@ export function createMarketplaceController(
     const now = new Date().toISOString();
 
     if (desc.category === 'device') {
-      for (const item of MARKETPLACE_CATALOG) {
+      for (const item of getAllDescriptors()) {
         if (item.category !== 'device') continue;
         const prev = states.get(item.id) || { installed: false, active: false };
         if (item.id === desc.id) {
@@ -248,6 +289,9 @@ export function createMarketplaceController(
       );
     } else if (desc.category === 'portal') {
       const prev = states.get(desc.id);
+      if (!prev?.installed && desc.verdaccioPackage) {
+        verdaccio?.recordDownload(desc.verdaccioPackage);
+      }
       states.set(desc.id, {
         installed: true,
         active: true,

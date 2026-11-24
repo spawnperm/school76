@@ -12,6 +12,11 @@ import type {
 } from '../../src/harness/types.ts';
 import { createMarketplaceController } from './marketplace.ts';
 import {
+  createVerdaccioRegistry,
+  type PublishVerdaccioPackageInput,
+  type VerdaccioRegistryController,
+} from '../verdaccioRegistry.ts';
+import {
   dispatchForgejoActionRun,
   lintForgejoWiki,
   listForgejoActionRuns,
@@ -31,7 +36,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
     id: 'cubesat-full',
     name: 'CubeSat 1U Full',
     description:
-      'Полная конфигурация DeepSeek-Harness: проекты, доска задач, Forgejo llm-wiki, mBlock ПО, CI/CD, техчат и агентский цикл.',
+      'Полная конфигурация DeepSeek-Harness: проекты, доска задач, Forgejo llm-wiki, mBlock ПО, CI/CD, техчат, Verdaccio и агентский цикл.',
     bundles: ['dsh-base', 'dsh-cubesat', 'dsh-devops', 'dsh-collab'],
     enabledPlugins: [
       'dsh-store-json',
@@ -39,7 +44,10 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-s3-garage',
       'dsh-ci-hybrid',
       'dsh-realtime-ws',
+      'dsh-registry-verdaccio',
       'dsh-tools-cubesat',
+      'dsh-telemetry-ax25',
+      'dsh-hil-validator',
       'dsh-llm-gemini',
       'dsh-agent-loop',
       'dsh-ui-harness',
@@ -59,6 +67,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-s3': 'dsh-s3-garage',
       'dsh-ci': 'dsh-ci-hybrid',
       'dsh-realtime': 'dsh-realtime-ws',
+      'dsh-registry': 'dsh-registry-verdaccio',
       'dsh-tools': 'dsh-tools-cubesat',
       'dsh-llm': 'dsh-llm-gemini',
     },
@@ -67,12 +76,14 @@ const PROFILES: HarnessProfileDescriptor[] = [
     id: 'firmware-lab',
     name: 'Firmware & mBlock Lab',
     description:
-      'Лабораторный контур бортового ПО: визуальный редактор mBlock, стенд 1U, задачи подсистем и инструменты инспекции.',
+      'Лабораторный контур бортового ПО: визуальный редактор mBlock, стенд 1U, HIL-валидатор, телеметрия и инструменты инспекции.',
     bundles: ['dsh-base', 'dsh-cubesat'],
     enabledPlugins: [
       'dsh-store-json',
       'dsh-forge-forgejo',
       'dsh-tools-cubesat',
+      'dsh-telemetry-ax25',
+      'dsh-hil-validator',
       'dsh-llm-deterministic',
       'dsh-agent-loop',
       'dsh-ui-harness',
@@ -92,13 +103,14 @@ const PROFILES: HarnessProfileDescriptor[] = [
     id: 'headless-ci',
     name: 'Headless CI & Wiki Audit',
     description:
-      'Контур автоматизации DevOps: Forgejo Actions, GitHub Sync, проверка wiki-графа и агентный цикл без лишних UI-слотов.',
+      'Контур автоматизации DevOps: Forgejo Actions, GitHub Sync, Verdaccio, проверка wiki-графа и агентный цикл без лишних UI-слотов.',
     bundles: ['dsh-base', 'dsh-devops'],
     enabledPlugins: [
       'dsh-store-json',
       'dsh-forge-forgejo',
       'dsh-s3-garage',
       'dsh-ci-hybrid',
+      'dsh-registry-verdaccio',
       'dsh-tools-cubesat',
       'dsh-llm-gemini',
       'dsh-agent-loop',
@@ -112,6 +124,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
       'dsh-forge': 'dsh-forge-forgejo',
       'dsh-s3': 'dsh-s3-garage',
       'dsh-ci': 'dsh-ci-hybrid',
+      'dsh-registry': 'dsh-registry-verdaccio',
       'dsh-tools': 'dsh-tools-cubesat',
       'dsh-llm': 'dsh-llm-gemini',
     },
@@ -140,6 +153,7 @@ const PROFILES: HarnessProfileDescriptor[] = [
 
 export interface ServerHarnessRuntime {
   kernel: HarnessKernel<ServerHarnessServices>;
+  verdaccio: VerdaccioRegistryController;
   getSnapshot: () => HarnessRuntimeSnapshot;
   activateProfile: (profileId: string) => HarnessRuntimeSnapshot;
   togglePlugin: (pluginId: string, enabled?: boolean) => HarnessRuntimeSnapshot;
@@ -152,6 +166,11 @@ export interface ServerHarnessRuntime {
   uninstallMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
   activateMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
   deactivateMarketplaceModule: (moduleId: string) => MarketplaceSnapshot;
+  publishVerdaccioPackage: (input: PublishVerdaccioPackageInput) => {
+    pkg: ReturnType<VerdaccioRegistryController['publishPackage']>;
+    marketplace: MarketplaceSnapshot;
+    snapshot: HarnessRuntimeSnapshot;
+  };
 }
 
 export function createServerHarness(
@@ -161,7 +180,23 @@ export function createServerHarness(
   const kernel = new HarnessKernel<ServerHarnessServices>('DeepSeek-Harness (Cordis)');
   const toolHandlers = new Map<string, ToolHandlerEntry>();
   const agentHistory: HarnessAgentRunResult[] = [];
-  const marketplace = createMarketplaceController(rootDir, kernel);
+  const verdaccio = createVerdaccioRegistry(rootDir);
+  const marketplace = createMarketplaceController(rootDir, kernel, verdaccio);
+
+  const registerPluginTool = (
+    ctx: {
+      registerTool: (tool: Omit<HarnessToolSchema, 'pluginId'>) => void;
+      effect: (dispose: () => void) => void;
+    },
+    schema: Omit<HarnessToolSchema, 'pluginId'>,
+    execute: ToolHandlerEntry['execute']
+  ) => {
+    ctx.registerTool(schema);
+    toolHandlers.set(schema.name, { execute });
+    ctx.effect(() => {
+      toolHandlers.delete(schema.name);
+    });
+  };
 
   kernel
     .defineSeam('dsh-store', 'Хранилище состояния', 'Управление проектами, задачами, программами ПО и профилями.')
@@ -169,6 +204,7 @@ export function createServerHarness(
     .defineSeam('dsh-s3', 'Объектное хранилище S3', 'Бакеты Garage S3 для схем, медиафайлов и артефактов.')
     .defineSeam('dsh-ci', 'Раннеры CI/CD', 'Запуск и инспекция конвейеров GitHub Actions и Forgejo Actions.')
     .defineSeam('dsh-realtime', 'Транспорт реального времени', 'WebSocket-канал техчата и онлайн-присутствие команды.')
+    .defineSeam('dsh-registry', 'Реестр пакетов Verdaccio', 'Приватный npm-реестр Verdaccio для модулей dsh-* и тарболов .tgz.')
     .defineSeam('dsh-tools', 'Реестр инструментов', 'Типизированные инструменты (dsh-tools) для агента и консоли.')
     .defineSeam('dsh-llm', 'Адаптер рассуждений', 'Провайдер планирования для цикла DeepSeek-Harness.');
 
@@ -792,6 +828,351 @@ export function createServerHarness(
     },
   });
 
+  kernel.plugin({
+    id: 'dsh-registry-verdaccio',
+    name: 'Verdaccio NPM Registry',
+    description: 'Провайдер приватного хранилища модулей dsh-* в формате Verdaccio (.tgz + packument v1).',
+    bundle: 'dsh-devops',
+    kind: 'seam-provider',
+    locked: true,
+    inject: ['tools'],
+    provides: ['registry'],
+    providesSeam: 'dsh-registry',
+    apply(ctx) {
+      ctx.provide('registry', {
+        driver: 'verdaccio-embedded-v5',
+        getOverview: () => verdaccio.getOverview(),
+        search: (query?: string) => verdaccio.searchPackages(query),
+        getPackage: (name: string) => verdaccio.getPackage(name),
+      });
+
+      registerPluginTool(
+        ctx,
+        {
+          name: 'verdaccio.search',
+          seam: 'dsh-registry',
+          description: 'Поиск npm-пакетов @school76/dsh-* в локальном хранилище Verdaccio.',
+          mutating: false,
+          parameters: {
+            query: { type: 'string', description: 'Поисковый запрос (например: ax25, hil, orbit, dsh)' },
+          },
+        },
+        async (args) => {
+          const query = typeof args.query === 'string' ? args.query : '';
+          const matches = verdaccio.searchPackages(query);
+          return {
+            registryUrl: '/verdaccio',
+            totalMatches: matches.length,
+            packages: matches.map((p) => ({
+              name: p.name,
+              version: p.version,
+              subsystem: p.subsystem,
+              tarball: p.dist.tarball,
+              tarballBytes: p.dist.tarballBytes,
+              dshTools: p.dshTools,
+              downloads: p.downloads,
+            })),
+          };
+        }
+      );
+
+      registerPluginTool(
+        ctx,
+        {
+          name: 'verdaccio.package_info',
+          seam: 'dsh-registry',
+          description: 'Получить packument-манифест, SHA-512 целостность и ссылку на .tgz пакета из Verdaccio.',
+          mutating: false,
+          parameters: {
+            packageName: {
+              type: 'string',
+              description: 'Имя пакета (например @school76/dsh-telemetry-ax25)',
+              required: true,
+            },
+          },
+        },
+        async (args) => {
+          const pkgName = typeof args.packageName === 'string' ? args.packageName.trim() : '';
+          if (!pkgName) throw new Error('Параметр packageName обязателен');
+          const pkg = verdaccio.getPackage(pkgName);
+          if (!pkg) throw new Error(`Пакет "${pkgName}" не найден в Verdaccio`);
+          return {
+            package: pkg,
+            packument: verdaccio.getPackument(pkgName),
+          };
+        }
+      );
+    },
+  });
+
+  kernel.plugin({
+    id: 'dsh-telemetry-ax25',
+    name: 'DSH AX.25 Telemetry & EPS Power',
+    description: 'Декодер радиомаяков AX.25 / KISS 435.800 МГц и калькулятор энергобюджета 1U кубсата.',
+    bundle: 'dsh-cubesat',
+    kind: 'tool-pack',
+    inject: ['store', 'tools'],
+    apply(ctx) {
+      registerPluginTool(
+        ctx,
+        {
+          name: 'telemetry.decode_ax25',
+          seam: 'dsh-tools',
+          description: 'Декодировать кадр маяка AX.25 / KISS (hex или ASCII-строку RS0S76) в параметры OBC и EPS.',
+          mutating: false,
+          parameters: {
+            frame: {
+              type: 'string',
+              description: 'ASCII или hex-строка кадра маяка (например RS0S76:VBAT=8.12,TEMP=21.4,RSSI=-94)',
+            },
+          },
+        },
+        async (args) => {
+          const raw =
+            typeof args.frame === 'string' && args.frame.trim()
+              ? args.frame.trim()
+              : 'RS0S76:VBAT=8.14,IBAT=0.42,TEMP=22.1,RSSI=-92,MODE=NOMINAL';
+          const isHex = /^[0-9a-fA-F\s]+$/.test(raw) && raw.replace(/\s+/g, '').length >= 16;
+          const ascii = isHex
+            ? Buffer.from(raw.replace(/\s+/g, ''), 'hex').toString('utf8').replace(/[^\x20-\x7E]/g, '')
+            : raw;
+          const vbatMatch = ascii.match(/VBAT[=:\s]+([0-9.]+)/i);
+          const tempMatch = ascii.match(/TEMP[=:\s]+(-?[0-9.]+)/i);
+          const rssiMatch = ascii.match(/RSSI[=:\s]+(-?[0-9.]+)/i);
+          const callMatch = ascii.match(/\b(RS0S76|RS76S|CQ)\b/i);
+          const vbat = vbatMatch ? Number(vbatMatch[1]) : 8.14;
+          const tempC = tempMatch ? Number(tempMatch[1]) : 22.1;
+          const rssiDbm = rssiMatch ? Number(rssiMatch[1]) : -92;
+          return {
+            protocol: 'AX.25 UI-Frame (435.800 MHz / 9600 bps GMSK)',
+            callsign: callMatch ? callMatch[1].toUpperCase() : 'RS0S76',
+            rawLength: raw.length,
+            decodedText: ascii,
+            telemetry: {
+              batteryVoltageV: vbat,
+              obcTempC: tempC,
+              rssiDbm,
+              epsHealth: vbat >= 7.2 ? 'NOMINAL' : vbat >= 6.6 ? 'LOW_POWER' : 'SAFE_MODE',
+            },
+          };
+        }
+      );
+
+      registerPluginTool(
+        ctx,
+        {
+          name: 'telemetry.power_budget',
+          seam: 'dsh-tools',
+          description: 'Рассчитать суточный баланс мощности 1U кубсата (солнечный цикл / тень Земли / АКБ).',
+          mutating: false,
+          parameters: {
+            solarPanelWatts: { type: 'number', description: 'Мощность солнечных панелей на солнце, Вт (по умолчанию 2.3)' },
+            eclipseMinutes: { type: 'number', description: 'Длительность тени на витке, мин (по умолчанию 35)' },
+            txDutyPct: { type: 'number', description: 'Скважность передатчика UHF, % (по умолчанию 12)' },
+          },
+        },
+        async (args) => {
+          const solarW = typeof args.solarPanelWatts === 'number' && args.solarPanelWatts > 0 ? args.solarPanelWatts : 2.3;
+          const eclipseMin = typeof args.eclipseMinutes === 'number' && args.eclipseMinutes >= 0 ? args.eclipseMinutes : 35;
+          const txDuty = typeof args.txDutyPct === 'number' && args.txDutyPct >= 0 ? args.txDutyPct : 12;
+          const orbitMin = 95;
+          const sunlitMin = Math.max(orbitMin - eclipseMin, 10);
+          const genWh = (solarW * sunlitMin) / 60 * 0.84;
+          const baseLoadW = 0.65 + (txDuty / 100) * 1.45;
+          const consWh = (baseLoadW * orbitMin) / 60;
+          const marginPct = Number((((genWh - consWh) / Math.max(consWh, 0.1)) * 100).toFixed(1));
+          return {
+            orbitMinutes: orbitMin,
+            sunlitMinutes: sunlitMin,
+            eclipseMinutes: eclipseMin,
+            generatedWhPerOrbit: Number(genWh.toFixed(3)),
+            consumedWhPerOrbit: Number(consWh.toFixed(3)),
+            marginPct,
+            verdict: marginPct >= 10 ? 'POSITIVE_MARGIN' : marginPct >= 0 ? 'TIGHT_MARGIN' : 'NEGATIVE_DEFICIT',
+          };
+        }
+      );
+    },
+  });
+
+  kernel.plugin({
+    id: 'dsh-hil-validator',
+    name: 'DSH HIL Firmware Validator',
+    description: 'Статический анализатор прошивок mBlock (MicroPython / STM32 C++): проверка WDT, циклов и UART 0xFF 0x55.',
+    bundle: 'dsh-cubesat',
+    kind: 'tool-pack',
+    inject: ['store', 'tools'],
+    apply(ctx) {
+      registerPluginTool(
+        ctx,
+        {
+          name: 'hil.audit_firmware',
+          seam: 'dsh-tools',
+          description: 'Провести HIL-аудит зарегистрированных программ mBlock на наличие WDT, пауз в циклах и заголовков UART.',
+          mutating: false,
+          parameters: {
+            programId: { type: 'string', description: 'ID программы mBlock (если пусто — проверить все программы проекта)' },
+          },
+        },
+        async (args) => {
+          const store = ctx.service('store');
+          const targetId = typeof args.programId === 'string' && args.programId.trim() ? args.programId.trim() : '';
+          const progs = store.getPrograms().filter((p) => (!targetId ? true : p.id === targetId));
+          const reports = progs.map((p) => {
+            const code = `${p.pythonCode || ''}\n${p.cppCode || ''}`;
+            const hasWatchdog = /wdt|watchdog|iwdg/i.test(code);
+            const hasLoop = /while\s+True|while\s*\(1\)|void\s+loop/i.test(code);
+            const hasYieldOrDelay = /sleep|delay|vTaskDelay|millis/i.test(code);
+            const hasBinaryHeader = /0xff.*0x55|write\(|Serial/i.test(code);
+            const warnings: string[] = [];
+            if (!hasWatchdog) warnings.push('Не обнаружен явный сброс сторожевого таймера (WDT)');
+            if (hasLoop && !hasYieldOrDelay) warnings.push('Цикл без явной задержки sleep/delay — риск перегрузки CPU');
+            return {
+              id: p.id,
+              name: p.name,
+              subsystem: p.subsystem,
+              targetBoard: p.targetBoard,
+              checks: { hasWatchdog, hasLoop, hasYieldOrDelay, hasBinaryHeader },
+              warnings,
+              status: warnings.length === 0 ? 'PASS' : 'WARN',
+            };
+          });
+          return {
+            auditedCount: reports.length,
+            passCount: reports.filter((r) => r.status === 'PASS').length,
+            warnCount: reports.filter((r) => r.status === 'WARN').length,
+            reports,
+          };
+        }
+      );
+    },
+  });
+
+  kernel.plugin(
+    {
+      id: 'dsh-orbit-sgp4',
+      name: 'DSH Orbit SGP4 & Doppler',
+      description: 'Прогноз окон пролёта кубсата 1U по TLE и оценка доплеровского сдвига частоты UHF 435.800 МГц.',
+      bundle: 'dsh-cubesat',
+      kind: 'tool-pack',
+      inject: ['store', 'tools'],
+      apply(ctx) {
+        registerPluginTool(
+          ctx,
+          {
+            name: 'orbit.predict_pass',
+            seam: 'dsh-tools',
+            description: 'Рассчитать ближайшие окна радиовидимости (AOS/TCA/LOS) для наземной станции school76.',
+            mutating: false,
+            parameters: {
+              stationLat: { type: 'number', description: 'Широта наземной станции (по умолчанию 58.01)' },
+              stationLon: { type: 'number', description: 'Долгота наземной станции (по умолчанию 56.25)' },
+              altitudeKm: { type: 'number', description: 'Высота орбиты кубсата, км (по умолчанию 540)' },
+            },
+          },
+          async (args) => {
+            const lat = typeof args.stationLat === 'number' ? args.stationLat : 58.01;
+            const lon = typeof args.stationLon === 'number' ? args.stationLon : 56.25;
+            const altKm = typeof args.altitudeKm === 'number' ? args.altitudeKm : 540;
+            const now = Date.now();
+            const passes = [1, 2, 3].map((idx) => {
+              const aosMs = now + idx * 95 * 60 * 1000;
+              const durationMin = idx === 2 ? 10.4 : 7.8;
+              const maxElDeg = idx === 2 ? 68 : idx === 1 ? 34 : 21;
+              return {
+                passNumber: idx,
+                aosUtc: new Date(aosMs).toISOString(),
+                losUtc: new Date(aosMs + durationMin * 60 * 1000).toISOString(),
+                durationMin,
+                maxElevationDeg: maxElDeg,
+                azimuthAosDeg: (145 + idx * 35) % 360,
+              };
+            });
+            return {
+              satellite: 'SCHOOL76-1U (NORAD 99076)',
+              groundStation: { lat, lon },
+              orbitAltitudeKm: altKm,
+              inclinationDeg: 97.5,
+              passes,
+            };
+          }
+        );
+
+        registerPluginTool(
+          ctx,
+          {
+            name: 'orbit.doppler_shift',
+            seam: 'dsh-tools',
+            description: 'Оценить доплеровский сдвиг несущей частоты UHF 435.800 МГц на пролёте.',
+            mutating: false,
+            parameters: {
+              centerFreqMhz: { type: 'number', description: 'Несущая частота, МГц (по умолчанию 435.800)' },
+              radialVelocityKms: { type: 'number', description: 'Лучевая скорость, км/с (по умолчанию 6.8)' },
+            },
+          },
+          async (args) => {
+            const freqMhz = typeof args.centerFreqMhz === 'number' ? args.centerFreqMhz : 435.8;
+            const vr = typeof args.radialVelocityKms === 'number' ? args.radialVelocityKms : 6.8;
+            const shiftKhz = Number((((vr * 1000) / 299792458) * freqMhz * 1000).toFixed(2));
+            return {
+              nominalFreqMhz: freqMhz,
+              maxDopplerKhz: shiftKhz,
+              aosRxMhz: Number((freqMhz + shiftKhz / 1000).toFixed(6)),
+              losRxMhz: Number((freqMhz - shiftKhz / 1000).toFixed(6)),
+            };
+          }
+        );
+      },
+    },
+    false
+  );
+
+  kernel.plugin(
+    {
+      id: 'dsh-alerts-watchdog',
+      name: 'DSH Mission Readiness Watchdog',
+      description: 'Инспектор готовности миссии 1U: анализ критических задач, программ OBC и активных модулей Cordis.',
+      bundle: 'dsh-collab',
+      kind: 'tool-pack',
+      inject: ['store', 'tools'],
+      apply(ctx) {
+        registerPluginTool(
+          ctx,
+          {
+            name: 'alerts.mission_readiness',
+            seam: 'dsh-tools',
+            description: 'Вычислить индекс готовности миссии school76-1u и выявить критические блокеры по подсистемам.',
+            mutating: false,
+            parameters: {
+              projectId: { type: 'string', description: 'ID проекта (по умолчанию school76-1u)' },
+            },
+          },
+          async (args) => {
+            const store = ctx.service('store');
+            const projectId = typeof args.projectId === 'string' && args.projectId.trim() ? args.projectId.trim() : 'school76-1u';
+            const tasks = store.getTasks().filter((t) => t.projectId === projectId);
+            const progs = store.getPrograms().filter((p) => (p.projectId || 'school76-1u') === projectId);
+            const doneCount = tasks.filter((t) => t.status === 'done').length;
+            const criticalOpen = tasks.filter((t) => t.status !== 'done' && t.priority === 'critical');
+            const readinessScore = tasks.length
+              ? Math.min(100, Math.round((doneCount / tasks.length) * 70 + (progs.length > 0 ? 30 : 0) - criticalOpen.length * 8))
+              : 50;
+            return {
+              projectId,
+              readinessScore: Math.max(0, readinessScore),
+              totalTasks: tasks.length,
+              completedTasks: doneCount,
+              programsCount: progs.length,
+              criticalBlockers: criticalOpen.map((t) => ({ id: t.id, title: t.title, subsystem: t.subsystem })),
+              status: readinessScore >= 75 ? 'GO_FOR_HIL' : 'NEEDS_REVIEW',
+            };
+          }
+        );
+      },
+    },
+    false
+  );
+
   async function runDeterministicLoop(
     providerId: 'dsh-llm-gemini' | 'dsh-llm-deterministic',
     goal: string,
@@ -1342,11 +1723,64 @@ export function createServerHarness(
     });
   }
 
+  const publishVerdaccioPackage = (input: PublishVerdaccioPackageInput) => {
+    const pkg = verdaccio.publishPackage(input, 'published');
+    if (pkg.dshPluginId && !kernel.getSnapshot().plugins.some((p) => p.id === pkg.dshPluginId)) {
+      const pluginId = pkg.dshPluginId;
+      kernel.plugin(
+        {
+          id: pluginId,
+          name: pkg.name,
+          description: pkg.description,
+          bundle: pkg.bundle,
+          kind: pkg.dshTools.length > 0 ? 'tool-pack' : 'consumer',
+          inject: ['store', 'tools'],
+          apply(ctx) {
+            for (const toolName of pkg.dshTools) {
+              registerPluginTool(
+                ctx,
+                {
+                  name: toolName,
+                  seam: 'dsh-tools',
+                  description: `Инструмент пакета ${pkg.name}@${pkg.version} (${pkg.subsystem})`,
+                  mutating: false,
+                  parameters: {
+                    input: { type: 'string', description: 'Входной параметр модуля' },
+                  },
+                },
+                async (args) => ({
+                  package: pkg.name,
+                  version: pkg.version,
+                  subsystem: pkg.subsystem,
+                  args,
+                  executedAt: new Date().toISOString(),
+                })
+              );
+            }
+            ctx.effect(() => {});
+          },
+        },
+        false
+      );
+    }
+    kernel.recordEvent(
+      'plugin:mount',
+      `verdaccio:${pkg.name}`,
+      `Опубликован пакет ${pkg.name}@${pkg.version} в Verdaccio (${pkg.dist.tarballBytes} байт)`
+    );
+    return {
+      pkg,
+      marketplace: marketplace.getSnapshot(),
+      snapshot: kernel.getSnapshot(),
+    };
+  };
+
   kernel.activateProfile('cubesat-full');
   marketplace.syncToKernel();
 
   return {
     kernel,
+    verdaccio,
     getSnapshot: () => kernel.getSnapshot(),
     activateProfile: (profileId) => {
       const snap = kernel.activateProfile(profileId);
@@ -1389,6 +1823,7 @@ export function createServerHarness(
     uninstallMarketplaceModule: (moduleId) => marketplace.uninstallModule(moduleId),
     activateMarketplaceModule: (moduleId) => marketplace.activateModule(moduleId),
     deactivateMarketplaceModule: (moduleId) => marketplace.deactivateModule(moduleId),
+    publishVerdaccioPackage,
   };
 }
 
@@ -1510,6 +1945,40 @@ export function registerHarnessRoutes(
       res.json({ ok: true, marketplace, snapshot: runtime.getSnapshot() });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Marketplace deactivate failed' });
+    }
+  });
+
+  runtime.verdaccio.registerRoutes(app);
+
+  app.post('/api/verdaccio/publish', (req, res) => {
+    try {
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Partial<PublishVerdaccioPackageInput>;
+      if (!body.name || !body.description) {
+        res.status(400).json({ error: 'Поля name и description обязательны для публикации в Verdaccio' });
+        return;
+      }
+      const published = runtime.publishVerdaccioPackage({
+        name: String(body.name),
+        version: body.version ? String(body.version) : '1.0.0',
+        description: String(body.description),
+        author: body.author ? String(body.author) : undefined,
+        subsystem: body.subsystem ? String(body.subsystem) : undefined,
+        bundle: body.bundle,
+        dshPluginId: body.dshPluginId ? String(body.dshPluginId) : undefined,
+        marketplaceModuleId: body.marketplaceModuleId ? String(body.marketplaceModuleId) : undefined,
+        dshTools: Array.isArray(body.dshTools) ? body.dshTools.map(String) : undefined,
+        keywords: Array.isArray(body.keywords) ? body.keywords.map(String) : undefined,
+        code: body.code ? String(body.code) : undefined,
+      });
+      res.status(201).json({
+        ok: true,
+        package: published.pkg,
+        verdaccio: runtime.verdaccio.getOverview(),
+        marketplace: published.marketplace,
+        snapshot: published.snapshot,
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Verdaccio publish failed' });
     }
   });
 }
