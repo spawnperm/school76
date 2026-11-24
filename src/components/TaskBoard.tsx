@@ -86,6 +86,24 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     [tasks, focusedTaskId]
   );
 
+  const subsystemProgress = useMemo(() => {
+    const subs: Subsystem[] = ['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'];
+    return subs.map((sub) => {
+      const subTasks = tasks.filter((t) => t.subsystem === sub);
+      const total = subTasks.length;
+      const done = subTasks.filter((t) => t.status === 'done').length;
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      return { sub, total, done, pct };
+    });
+  }, [tasks]);
+
+  const overallStats = useMemo(() => {
+    const total = tasks.length;
+    const done = tasks.filter((t) => t.status === 'done').length;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    return { total, done, pct };
+  }, [tasks]);
+
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
@@ -166,6 +184,62 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         </div>
       </div>
 
+      {/* Subsystem Readiness Progress Bars */}
+      <section className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-600">
+            Готовность бортового ПО по подсистемам
+          </h2>
+          <span className="text-xs font-mono tabular-nums text-slate-600">
+            Общий прогресс: {overallStats.done}/{overallStats.total} ({overallStats.pct}%)
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2.5">
+          {subsystemProgress.map(({ sub, total, done, pct }) => {
+            const isSelected = subsystemFilter === sub;
+            return (
+              <button
+                key={sub}
+                type="button"
+                onClick={() => setSubsystemFilter(isSelected ? 'ALL' : sub)}
+                className={`text-left p-2.5 rounded-md border transition-colors space-y-1.5 ${
+                  isSelected
+                    ? 'border-sky-500 bg-sky-50/50'
+                    : 'border-slate-200 bg-slate-50/60 hover:border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-mono font-semibold text-slate-900">{sub}</span>
+                  <span
+                    className={`font-mono tabular-nums font-semibold ${
+                      pct === 100 && total > 0 ? 'text-emerald-700' : 'text-slate-700'
+                    }`}
+                  >
+                    {pct}%
+                  </span>
+                </div>
+
+                <progress
+                  value={total > 0 ? done : 0}
+                  max={Math.max(total, 1)}
+                  aria-label={`Готовность ${sub}: ${pct}%`}
+                  className={`block w-full h-1.5 rounded-full overflow-hidden appearance-none [&::-webkit-progress-bar]:bg-slate-200/80 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:rounded-full [&::-moz-progress-bar]:rounded-full ${
+                    pct === 100 && total > 0
+                      ? '[&::-webkit-progress-value]:bg-emerald-600 [&::-moz-progress-bar]:bg-emerald-600'
+                      : '[&::-webkit-progress-value]:bg-sky-600 [&::-moz-progress-bar]:bg-sky-600'
+                  }`}
+                />
+
+                <div className="text-[11px] font-mono tabular-nums text-slate-500">
+                  {total > 0 ? `${done} из ${total} завершено` : 'Задач нет'}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
       {/* Subsystem Filter Segmented Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-3">
         <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
@@ -186,7 +260,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         </div>
 
         <div className="text-xs font-mono tabular-nums text-slate-500">
-          Всего задач: {filteredTasks.length} · Завершено:{' '}
+          Показано задач: {filteredTasks.length} · Завершено:{' '}
           {filteredTasks.filter((t) => t.status === 'done').length}
         </div>
       </div>
