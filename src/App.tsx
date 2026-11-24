@@ -14,6 +14,7 @@ import {
   CabinetView,
   ProjectsView,
 } from './components/CommunitiesAndCabinet.tsx';
+import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
 import type { ChatChannelId, CommunityProject, CubeSatTask } from './types/cubesat.ts';
 
 type WorkspaceTab = 'projects' | 'tasks' | 'wiki' | 'mblock' | 'chat' | 'cabinet';
@@ -50,6 +51,7 @@ export default function App() {
   const [draftProgramRefId, setDraftProgramRefId] = useState<string | null>(null);
   const [initialWikiDoc, setInitialWikiDoc] = useState<string | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showGitHubModal, setShowGitHubModal] = useState(false);
 
   const {
     authFetch,
@@ -209,6 +211,7 @@ export default function App() {
               setActiveTab('chat');
             }}
             onOpenWikiDoc={openWikiDocument}
+            onOpenGitHubSync={() => setShowGitHubModal(true)}
           />
         )}
 
@@ -237,6 +240,7 @@ export default function App() {
             initialDocPath={initialWikiDoc}
             onConsumeInitialDocPath={() => setInitialWikiDoc(null)}
             onRequireAuth={() => setShowAuthModal(true)}
+            onOpenGitHubSync={() => setShowGitHubModal(true)}
             authFetch={authFetch}
           />
         )}
@@ -312,6 +316,15 @@ export default function App() {
         onClose={() => setShowAuthModal(false)}
         onLogin={login}
         onRegister={register}
+      />
+
+      {/* GitHub Commit & Push Modal */}
+      <GitHubSyncModal
+        isOpen={showGitHubModal}
+        onClose={() => setShowGitHubModal(false)}
+        isAuthenticated={Boolean(currentUser)}
+        onRequireAuth={() => setShowAuthModal(true)}
+        authFetch={authFetch}
       />
     </div>
   );

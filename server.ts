@@ -40,6 +40,7 @@ import {
   listGarageObjects,
   putGarageObject,
 } from './server/garageS3.ts';
+import { commitAndPushToGitHub, getGitHubStatus } from './server/githubSync.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1040,7 +1041,12 @@ async function startServer() {
   app.put('/api/s3/:bucket/:key', requireAuth, async (req, res) => {
     try {
       const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
-      const base64Data = typeof req.body?.base64 === 'string' ? req.body.base64 : '';
+      const base64Data =
+        typeof req.body?.base64 === 'string'
+          ? req.body.base64
+          : typeof req.body?.base64Data === 'string'
+            ? req.body.base64Data
+            : '';
       const contentType = clampStr(req.body?.contentType, 80, 'application/octet-stream');
       if (!base64Data) {
         res.status(400).json({ error: 'Файл пуст' });
@@ -1086,6 +1092,32 @@ async function startServer() {
       res.json({ ok: deleted });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'S3 delete failed' });
+    }
+  });
+
+  // ==========================
+  // GITHUB COMMIT & PUSH SYNC
+  // ==========================
+  app.get('/api/github/status', (_req, res) => {
+    try {
+      res.json(getGitHubStatus(__dirname));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Git status error' });
+    }
+  });
+
+  app.post('/api/github/commit-push', requireAuth, (req, res) => {
+    try {
+      const currentUser = (req as express.Request & { currentUser: StoredUser }).currentUser;
+      const result = commitAndPushToGitHub(
+        __dirname,
+        req.body?.message,
+        currentUser.displayName,
+        `${currentUser.username}@school76.local`
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub push failed' });
     }
   });
 

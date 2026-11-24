@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   BookOpen,
   Cpu,
+  GitBranch,
   Heart,
   Image as ImageIcon,
   ListChecks,
@@ -739,6 +740,7 @@ interface ProjectsViewProps {
   onOpenProgram: (programId: string) => void;
   onOpenChannel: (channel: ChatChannelId) => void;
   onOpenWikiDoc: (docPath: string) => void;
+  onOpenGitHubSync: () => void;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = ({
@@ -762,6 +764,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onOpenProgram,
   onOpenChannel,
   onOpenWikiDoc,
+  onOpenGitHubSync,
 }) => {
   const [communityTab, setCommunityTab] = useState<'wall' | 'members' | 'bench'>('wall');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -855,20 +858,30 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            if (!currentUser) {
-              onRequireAuth();
-              return;
-            }
-            setShowCreateModal(true);
-          }}
-          className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-sky-600 rounded-md hover:bg-sky-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Создать проект
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenGitHubSync}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+          >
+            <GitBranch className="w-4 h-4 text-slate-600" />
+            Зафиксировать на GitHub
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!currentUser) {
+                onRequireAuth();
+                return;
+              }
+              setShowCreateModal(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-sky-600 rounded-md hover:bg-sky-700 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Создать проект
+          </button>
+        </div>
       </div>
 
       {/* Directory Grid of Team Projects */}

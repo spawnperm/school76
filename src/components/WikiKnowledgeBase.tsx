@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   FileText,
+  GitBranch,
   GitCommit,
   HardDrive,
   Upload,
@@ -25,6 +26,7 @@ interface WikiKnowledgeBaseProps {
   initialDocPath?: string | null;
   onConsumeInitialDocPath?: () => void;
   onRequireAuth: () => void;
+  onOpenGitHubSync?: () => void;
   authFetch: (url: string, options?: RequestInit) => Promise<any>;
 }
 
@@ -186,6 +188,7 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
   initialDocPath,
   onConsumeInitialDocPath,
   onRequireAuth,
+  onOpenGitHubSync,
   authFetch,
 }) => {
   const [tree, setTree] = useState<ForgejoFileEntry[]>([]);
@@ -605,6 +608,17 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
             )}
             {errorMsg && (
               <span className="text-xs font-medium text-rose-600">{errorMsg}</span>
+            )}
+
+            {onOpenGitHubSync && (
+              <button
+                type="button"
+                onClick={onOpenGitHubSync}
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50"
+              >
+                <GitBranch className="w-3.5 h-3.5 text-slate-600" />
+                В GitHub
+              </button>
             )}
 
             <div className="flex items-center p-0.5 bg-slate-200/70 rounded-md">
