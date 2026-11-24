@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Blockly mBlock-style workspace container adjustments */
+.school76-blockly .blocklyToolboxDiv {
+  background-color: #f8fafc;
+  border-right: 1px solid #e2e8f0;
+  padding-top: 8px;
+}
+
+.school76-blockly .blocklyTreeRow {
+  height: 36px;
+  line-height: 36px;
+  margin: 2px 6px;
+  padding-left: 10px;
+  padding-right: 12px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.school76-blockly .blocklyFlyoutBackground {
+  fill: #f1f5f9;
+  fill-opacity: 0.96;
+}
+
+.school76-blockly .blocklyMainBackground {
+  stroke: none;
+}
+
+.school76-blockly .blocklyText {
+  font-family: var(--font-sans);
+  font-weight: 500;
+}

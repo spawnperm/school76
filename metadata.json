@@ -1,0 +1,6 @@
+{
+  "name": "school76",
+  "description": "Совместная разработка кубсата 1U: управление задачами по подсистемам, технический чат команды и визуальное программирование бортовых систем на основе mBlock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
