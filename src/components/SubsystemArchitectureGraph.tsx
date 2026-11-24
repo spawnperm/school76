@@ -15,6 +15,12 @@ import type {
   OnboardProgram,
   Subsystem,
 } from '../types/cubesat.ts';
+import {
+  SUBSYSTEM_META,
+  SUBSYSTEM_ORDER,
+  computeSubsystemStats,
+  type SubsystemMeta,
+} from '../constants/subsystems.ts';
 
 interface SubsystemArchitectureGraphProps {
   projectName: string;
@@ -27,19 +33,6 @@ interface SubsystemArchitectureGraphProps {
 type LinkKind = 'power' | 'data' | 'rf' | 'task';
 type LinkFilter = 'all' | LinkKind;
 type GraphLayoutMode = 'schematic' | 'force';
-
-interface SubsystemNodeSpec {
-  id: Subsystem;
-  title: string;
-  shortTitle: string;
-  role: string;
-  hardware: string;
-  bus: string;
-  powerSpec: string;
-  accent: string;
-  schematicX: number;
-  schematicY: number;
-}
 
 interface ArchEdgeSpec {
   id: string;
@@ -54,7 +47,7 @@ interface ArchEdgeSpec {
 
 interface SimNode extends d3.SimulationNodeDatum {
   id: Subsystem;
-  spec: SubsystemNodeSpec;
+  spec: SubsystemMeta;
   totalTasks: number;
   doneTasks: number;
   inProgressTasks: number;
@@ -78,80 +71,7 @@ interface SimEdge extends d3.SimulationLinkDatum<SimNode> {
 const CANVAS_W = 820;
 const CANVAS_H = 440;
 
-const SUBSYSTEM_NODES: SubsystemNodeSpec[] = [
-  {
-    id: 'EPS',
-    title: 'Система энергопитания',
-    shortTitle: 'Энергопитание',
-    role: 'Генерация MPPT, АКБ 2S Li-Ion и коммутация шин 3.3В / 5В',
-    hardware: '2S Li-Ion 5200 мАч · 5× фотопанелей GaAs · INA219',
-    bus: 'I2C телеметрия · 3 управляемых ключа нагрузки',
-    powerSpec: '7.4 В номин. · до 2.6 Вт',
-    accent: '#d97706',
-    schematicX: 140,
-    schematicY: 220,
-  },
-  {
-    id: 'OBC',
-    title: 'Бортовой компьютер',
-    shortTitle: 'Бортовой ПК',
-    role: 'Центральный контроллер режимов, FreeRTOS/mBlock и Watchdog',
-    hardware: 'STM32F405 / ESP32-S3 · FRAM журнал',
-    bus: 'SPI · I2C · UART · CAN · GPIO',
-    powerSpec: '3.3 В · ~180 мА номин.',
-    accent: '#0284c7',
-    schematicX: 390,
-    schematicY: 220,
-  },
-  {
-    id: 'ADCS',
-    title: 'Ориентация и стабилизация',
-    shortTitle: 'ADCS B-dot',
-    role: 'Измерение угловой скорости IMU и демпфирование катушками',
-    hardware: 'IMU 9-DOF · 6× солнечных датчиков · 3× МТК',
-    bus: 'I2C (IMU) · 3× H-Bridge ШИМ',
-    powerSpec: '5.0 В (ADCS_5V) · до 240 мА',
-    accent: '#7c3aed',
-    schematicX: 390,
-    schematicY: 82,
-  },
-  {
-    id: 'PAYLOAD',
-    title: 'Полезная нагрузка',
-    shortTitle: 'Камера ДЗЗ',
-    role: 'Съёмка Земли по команде и сцинтилляционный дозиметр',
-    hardware: 'Камера 1280×720 · Счётчик частиц · SD-буфер',
-    bus: 'DCMI / SPI · Питание по порогу SoC > 45%',
-    powerSpec: '5.0 В (PAYLOAD_5V) · 360 мА пик',
-    accent: '#e11d48',
-    schematicX: 390,
-    schematicY: 358,
-  },
-  {
-    id: 'COMMS',
-    title: 'Командная радиолиния',
-    shortTitle: 'Радио UHF',
-    role: 'Приём радиокоманд с Земли и передача маяков AX.25',
-    hardware: 'Трансивер 435.800 МГц · Диполь · УМ 10/20/27 дБм',
-    bus: 'SPI / UART (AX.25 пакеты)',
-    powerSpec: '3.3 В (COMMS_3V3) · пик 480 мА',
-    accent: '#059669',
-    schematicX: 590,
-    schematicY: 220,
-  },
-  {
-    id: 'GROUND',
-    title: 'Наземный сегмент',
-    shortTitle: 'Станция SDR',
-    role: 'Приём телеметрии на Яги, декодер и отправка команд ТК',
-    hardware: 'UHF-SDR приёмник · Поворотное устройство Яги',
-    bus: 'UHF 435.800 МГц · TLE орбитальный трекинг',
-    powerSpec: 'Наземное питание 220 В / 12 В',
-    accent: '#475569',
-    schematicX: 735,
-    schematicY: 220,
-  },
-];
+const SUBSYSTEM_NODES: SubsystemMeta[] = SUBSYSTEM_ORDER.map((id) => SUBSYSTEM_META[id]);
 
 const STATIC_ARCH_EDGES: ArchEdgeSpec[] = [
   {
@@ -269,15 +189,15 @@ export const SubsystemArchitectureGraph: React.FC<SubsystemArchitectureGraphProp
       }
     >();
 
-    for (const spec of SUBSYSTEM_NODES) {
-      const subTasks = tasks.filter((t) => t.subsystem === spec.id);
-      const total = subTasks.length;
-      const done = subTasks.filter((t) => t.status === 'done').length;
-      const inProgress = subTasks.filter((t) => t.status === 'in_progress').length;
-      const review = subTasks.filter((t) => t.status === 'review').length;
-      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-      const programsCount = programs.filter((p) => p.subsystem === spec.id).length;
-      statsMap.set(spec.id, { total, done, inProgress, review, pct, programsCount });
+    for (const stat of computeSubsystemStats(tasks, programs)) {
+      statsMap.set(stat.subsystem, {
+        total: stat.total,
+        done: stat.done,
+        inProgress: stat.inProgress,
+        review: stat.review,
+        pct: stat.pct,
+        programsCount: stat.programsCount,
+      });
     }
 
     // Group task.dependsOn across different subsystems
@@ -471,7 +391,7 @@ export const SubsystemArchitectureGraph: React.FC<SubsystemArchitectureGraphProp
       .attr('class', 'node-focus-ring')
       .attr('r', nodeRadius + 7)
       .attr('fill', 'none')
-      .attr('stroke', (d) => d.spec.accent)
+      .attr('stroke', (d) => d.spec.hex)
       .attr('stroke-width', 1.8)
       .attr('stroke-dasharray', '4,3')
       .attr('opacity', 0);
@@ -508,7 +428,7 @@ export const SubsystemArchitectureGraph: React.FC<SubsystemArchitectureGraphProp
     nodeItems
       .append('path')
       .attr('d', (d) => progArc(d) || '')
-      .attr('fill', (d) => (d.readinessPct === 100 ? '#059669' : d.spec.accent));
+      .attr('fill', (d) => (d.readinessPct === 100 ? '#059669' : d.spec.hex));
 
     // Subsystem ID badge inside circle
     nodeItems
@@ -878,7 +798,7 @@ export const SubsystemArchitectureGraph: React.FC<SubsystemArchitectureGraphProp
                 <div className="flex items-center gap-2 text-xs font-mono text-slate-500">
                   <span
                     className="font-bold"
-                    style={{ color: selectedSpec.accent }}
+                    style={{ color: selectedSpec.hex }}
                   >
                     {selectedSpec.id}
                   </span>
@@ -888,7 +808,7 @@ export const SubsystemArchitectureGraph: React.FC<SubsystemArchitectureGraphProp
                   </span>
                 </div>
                 <h3 className="text-base font-bold text-slate-900 mt-0.5">
-                  {selectedSpec.title}
+                  {selectedSpec.fullName}
                 </h3>
               </div>
               <div className="text-right font-mono tabular-nums shrink-0">
@@ -915,7 +835,7 @@ export const SubsystemArchitectureGraph: React.FC<SubsystemArchitectureGraphProp
               </div>
               <div>
                 <span className="text-slate-500">Питание: </span>
-                <span className="font-mono text-slate-800">{selectedSpec.powerSpec}</span>
+                <span className="font-mono text-slate-800">{selectedSpec.powerBudget}</span>
               </div>
             </div>
 

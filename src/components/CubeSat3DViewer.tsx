@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ChevronDown, ChevronUp, Cpu, ListChecks, RotateCcw } from 'lucide-react';
 import type { CubeSatTask, Subsystem } from '../types/cubesat.ts';
 import { SUBSYSTEM_LABELS } from '../types/cubesat.ts';
+import { SUBSYSTEM_ORDER } from '../constants/subsystems.ts';
 
 interface CubeSat3DViewerProps {
   projectName: string;
@@ -26,8 +27,6 @@ interface SubsystemReadiness {
   hexColor: number;
   cssColor: string;
 }
-
-const SUBSYSTEM_ORDER: Subsystem[] = ['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'];
 
 // Reusable module-scope math helpers (zero GC inside render loop)
 const _pointer = new THREE.Vector2();
@@ -648,7 +647,8 @@ export const CubeSat3DViewer: React.FC<CubeSat3DViewerProps> = ({
     let currentFocusY = 0.58;
     let targetFocusY = 0.58;
     let disposed = false;
-    let frameId = 0;
+    let rafId = 0;
+    let syncTimeoutId: number | undefined;
     let renderBusy = false;
     let renderDirty = false;
     let lastTickMs = performance.now();
@@ -678,13 +678,13 @@ export const CubeSat3DViewer: React.FC<CubeSat3DViewerProps> = ({
         }
         const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
         if (state === gl.UNSIGNALED) {
-          frameId = window.setTimeout(poll, 5);
+          syncTimeoutId = window.setTimeout(poll, 5);
         } else {
           if (sync) gl.deleteSync(sync);
-          frameId = window.setTimeout(cb, 80);
+          syncTimeoutId = window.setTimeout(cb, 80);
         }
       };
-      frameId = window.setTimeout(poll, 5);
+      syncTimeoutId = window.setTimeout(poll, 5);
     }
 
     function requestRender() {
@@ -694,7 +694,7 @@ export const CubeSat3DViewer: React.FC<CubeSat3DViewerProps> = ({
         return;
       }
       renderBusy = true;
-      frameId = requestAnimationFrame(() => {
+      rafId = requestAnimationFrame(() => {
         if (disposed) return;
         renderDirty = false;
 
@@ -794,8 +794,10 @@ export const CubeSat3DViewer: React.FC<CubeSat3DViewerProps> = ({
 
     return () => {
       disposed = true;
-      cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
+      cancelAnimationFrame(rafId);
+      if (syncTimeoutId !== undefined) {
+        window.clearTimeout(syncTimeoutId);
+      }
       resizeObserver.disconnect();
       controls.removeEventListener('change', onControlChange);
       controls.dispose();

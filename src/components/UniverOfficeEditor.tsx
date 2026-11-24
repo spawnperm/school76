@@ -44,6 +44,11 @@ import {
   xlsxBufferToUniverWorkbook,
   type OfficeDocKind,
 } from '../utils/univerConverters.ts';
+import {
+  downloadTextOrBlobFile,
+  uploadBinaryToS3,
+  useTransientStatus,
+} from '../utils/formatters.ts';
 
 interface UniverOfficeEditorProps {
   project: CommunityProject;
@@ -83,7 +88,7 @@ export const UniverOfficeEditor: React.FC<UniverOfficeEditorProps> = ({
 
   const [saving, setSaving] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const { statusMsg, showStatus } = useTransientStatus(2600);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const officeS3Files = useMemo(
@@ -179,8 +184,7 @@ export const UniverOfficeEditor: React.FC<UniverOfficeEditorProps> = ({
           setInitialPayload(docData);
         }
         setSessionKey((k) => k + 1);
-        setStatusMsg(`Открыт в Univer: ${cleanName}`);
-        window.setTimeout(() => setStatusMsg(null), 2500);
+        showStatus(`Открыт в Univer: ${cleanName}`, 2500);
       } catch (err) {
         setErrorMsg(
           err instanceof Error
@@ -191,7 +195,7 @@ export const UniverOfficeEditor: React.FC<UniverOfficeEditorProps> = ({
         setLoadingFile(false);
       }
     },
-    []
+    [showStatus]
   );
 
   // Open S3 file when requested externally from Garage S3 sidebar
@@ -231,8 +235,13 @@ export const UniverOfficeEditor: React.FC<UniverOfficeEditorProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const buffer = await file.arrayBuffer();
-    await openOfficeBuffer(buffer, file.name);
+    setErrorMsg(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      await openOfficeBuffer(buffer, file.name);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : `Ошибка чтения файла ${file.name}`);
+    }
   };
 
   const handleOpenFromS3 = async (obj: GarageObjectMeta) => {
@@ -326,19 +335,9 @@ export const UniverOfficeEditor: React.FC<UniverOfficeEditorProps> = ({
     try {
       const { buffer, mime, downloadName } = await exportCurrentBinary();
       const base64 = arrayBufferToBase64(buffer);
-      await authFetch(
-        `/api/s3/${encodeURIComponent(project.s3Bucket)}/${encodeURIComponent(downloadName)}`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            base64,
-            contentType: mime,
-          }),
-        }
-      );
+      await uploadBinaryToS3(authFetch, project.s3Bucket, downloadName, base64, mime);
       setFileName(downloadName);
-      setStatusMsg(`Сохранено в Garage S3: ${downloadName}`);
-      window.setTimeout(() => setStatusMsg(null), 2800);
+      showStatus(`Сохранено в Garage S3: ${downloadName}`, 2800);
       await onS3Changed();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Ошибка сохранения документа в Garage S3');
@@ -351,15 +350,7 @@ export const UniverOfficeEditor: React.FC<UniverOfficeEditorProps> = ({
     setErrorMsg(null);
     try {
       const { buffer, mime, downloadName } = await exportCurrentBinary();
-      const blob = new Blob([buffer], { type: mime });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = downloadName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadTextOrBlobFile(buffer, downloadName, mime);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Ошибка экспорта файла');
     }

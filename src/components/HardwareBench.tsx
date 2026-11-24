@@ -4,8 +4,8 @@ import type {
   ChatChannelId,
   CubeSatTask,
   OnboardProgram,
-  Subsystem,
 } from '../types/cubesat.ts';
+import { SUBSYSTEM_META, SUBSYSTEM_ORDER } from '../constants/subsystems.ts';
 
 interface HardwareBenchProps {
   tasks: CubeSatTask[];
@@ -15,63 +15,9 @@ interface HardwareBenchProps {
   onOpenChannel: (channel: ChatChannelId) => void;
 }
 
-interface SubsystemSpec {
-  id: Subsystem;
-  name: string;
-  hardware: string;
-  bus: string;
-  powerBudget: string;
-  channel: ChatChannelId;
-  defaultProgramId?: string;
-}
-
-const SUBSYSTEM_SPECS: SubsystemSpec[] = [
-  {
-    id: 'OBC',
-    name: 'Бортовой компьютер (OBC)',
-    hardware: 'STM32F405 / ESP32-S3 (mBlock MicroPython & C++)',
-    bus: 'SPI · I2C · UART · CAN',
-    powerBudget: '3.3 В · 180 мА номин.',
-    channel: 'obc-firmware',
-    defaultProgramId: 'prog-nominal-beacon',
-  },
-  {
-    id: 'EPS',
-    name: 'Система энергопитания (EPS)',
-    hardware: '2S Li-Ion 5200 мАч · MPPT · 5× фотопанелей GaAs',
-    bus: 'I2C INA219 · 3 управляемые шины',
-    powerBudget: '7.4 В номин. · генерация до 2.6 Вт',
-    channel: 'eps-power',
-    defaultProgramId: 'prog-nominal-beacon',
-  },
-  {
-    id: 'ADCS',
-    name: 'Ориентация и стабилизация (ADCS)',
-    hardware: 'IMU 9-DOF · 6× датчиков Солнца · 3× магнитные катушки',
-    bus: 'I2C + 3× H-Bridge ШИМ',
-    powerBudget: '5.0 В · до 240 мА при B-dot',
-    channel: 'adcs-attitude',
-    defaultProgramId: 'prog-adcs-bdot',
-  },
-  {
-    id: 'COMMS',
-    name: 'Радиосвязь (COMMS)',
-    hardware: 'UHF трансивер 435.800 МГц · AX.25 · дипольная антенна',
-    bus: 'SPI · UART · 10/20/27 дБм',
-    powerBudget: '3.3 В · пик 480 мА на передаче',
-    channel: 'comms-rf',
-    defaultProgramId: 'prog-nominal-beacon',
-  },
-  {
-    id: 'PAYLOAD',
-    name: 'Полезная нагрузка (Payload)',
-    hardware: 'Камера ДЗЗ 1280×720 · Сцинтилляционный дозиметр',
-    bus: 'DCMI / SPI · SD-буфер',
-    powerBudget: '5.0 В · 360 мА в цикле съёмки',
-    channel: 'payload',
-    defaultProgramId: 'prog-payload-science',
-  },
-];
+const BENCH_SUBSYSTEMS = SUBSYSTEM_ORDER.filter((id) => id !== 'GROUND').map(
+  (id) => SUBSYSTEM_META[id]
+);
 
 export const HardwareBench: React.FC<HardwareBenchProps> = ({
   tasks,
@@ -190,13 +136,13 @@ export const HardwareBench: React.FC<HardwareBenchProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm">
-              {SUBSYSTEM_SPECS.map((spec) => {
+              {BENCH_SUBSYSTEMS.map((spec) => {
                 const subTasks = tasks.filter((t) => t.subsystem === spec.id);
                 const subDone = subTasks.filter((t) => t.status === 'done').length;
                 return (
                   <tr key={spec.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-3.5 px-4 font-semibold text-slate-900 whitespace-nowrap">
-                      {spec.name}
+                      {spec.fullName}
                     </td>
                     <td className="py-3.5 px-4 text-xs text-slate-600">
                       {spec.hardware}

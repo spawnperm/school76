@@ -1,7 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle,
-  Ban,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -9,10 +7,7 @@ import {
   Clock,
   Copy,
   ExternalLink,
-  Eye,
-  EyeOff,
   GitBranch,
-  KeyRound,
   Link2,
   Loader2,
   Maximize2,
@@ -28,6 +23,8 @@ import type {
   CommunityProject,
   GitHubRunLogsResponse,
 } from '../types/cubesat.ts';
+import { formatDateTimeRu, formatDurationSec, useCopyFeedback } from '../utils/formatters.ts';
+import { CiLogPre, GitHubPatInput, getCiRunVisual } from '../utils/ciHelpers.tsx';
 
 interface CiActionsPanelProps {
   projects: CommunityProject[];
@@ -35,79 +32,6 @@ interface CiActionsPanelProps {
   isAuthenticated: boolean;
   onRequireAuth: () => void;
   authFetch: (url: string, options?: RequestInit) => Promise<any>;
-}
-
-function formatRunDate(iso: string): string {
-  if (!iso) return '';
-  const dt = new Date(iso);
-  if (Number.isNaN(dt.getTime())) return '';
-  return dt.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function formatDuration(sec?: number): string {
-  if (sec === undefined || sec === null || Number.isNaN(sec)) return '';
-  if (sec < 60) return `${sec} с`;
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m} м ${s} с`;
-}
-
-function getRunVisual(run: CiWorkflowRun): {
-  label: string;
-  badgeClass: string;
-  icon: React.ReactNode;
-} {
-  if (run.status === 'in_progress') {
-    return {
-      label: 'Выполняется',
-      badgeClass: 'text-amber-800 bg-amber-50 border-amber-200',
-      icon: <Loader2 className="w-4 h-4 text-amber-600 animate-spin shrink-0" />,
-    };
-  }
-  if (run.status === 'queued') {
-    return {
-      label: 'В очереди',
-      badgeClass: 'text-slate-700 bg-slate-100 border-slate-200',
-      icon: <Clock className="w-4 h-4 text-slate-500 shrink-0" />,
-    };
-  }
-  switch (run.conclusion) {
-    case 'success':
-      return {
-        label: 'Успешно',
-        badgeClass: 'text-emerald-800 bg-emerald-50 border-emerald-200',
-        icon: <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />,
-      };
-    case 'failure':
-      return {
-        label: 'Ошибка сборки',
-        badgeClass: 'text-rose-800 bg-rose-50 border-rose-200',
-        icon: <XCircle className="w-4 h-4 text-rose-600 shrink-0" />,
-      };
-    case 'timed_out':
-      return {
-        label: 'Таймаут',
-        badgeClass: 'text-rose-800 bg-rose-50 border-rose-200',
-        icon: <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />,
-      };
-    case 'cancelled':
-      return {
-        label: 'Отменено',
-        badgeClass: 'text-slate-700 bg-slate-100 border-slate-200',
-        icon: <Ban className="w-4 h-4 text-slate-500 shrink-0" />,
-      };
-    default:
-      return {
-        label: 'Завершено',
-        badgeClass: 'text-slate-700 bg-slate-100 border-slate-200',
-        icon: <CheckCircle2 className="w-4 h-4 text-slate-500 shrink-0" />,
-      };
-  }
 }
 
 export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
@@ -138,7 +62,17 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
   const [loadingGithubLogsId, setLoadingGithubLogsId] = useState<string | null>(null);
   const [githubLogsErrorByRunId, setGithubLogsErrorByRunId] = useState<Record<string, string>>({});
   const [modalLogRun, setModalLogRun] = useState<CiWorkflowRun | null>(null);
-  const [copiedLogKey, setCopiedLogKey] = useState<string | null>(null);
+  const { copiedKey: copiedLogKey, copyText: handleCopyLogText } = useCopyFeedback(2000);
+  const githubReqSeqRef = useRef(0);
+  const forgejoReqSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Team GitHub binding editor
   const [editingTeamRepo, setEditingTeamRepo] = useState(false);
@@ -168,6 +102,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
   }, [githubTarget, projects]);
 
   const loadGitHubRuns = useCallback(async () => {
+    const reqSeq = ++githubReqSeqRef.current;
     setLoadingGithub(true);
     setGithubError(null);
     try {
@@ -182,6 +117,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
       }
       const res = await fetch(`/api/github/actions/runs${query}`, { headers });
       const data = await res.json().catch(() => ({}));
+      if (!mountedRef.current || reqSeq !== githubReqSeqRef.current) return;
       if (!res.ok) {
         throw new Error(data.error || 'Не удалось загрузить запуски GitHub Actions');
       }
@@ -192,14 +128,18 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
       setGithubTotalCount(typeof data.totalCount === 'number' ? data.totalCount : 0);
       setGithubTokenConfigured(Boolean(data.tokenConfigured));
     } catch (err) {
+      if (!mountedRef.current || reqSeq !== githubReqSeqRef.current) return;
       setGithubError(err instanceof Error ? err.message : 'Ошибка GitHub Actions');
       setGithubRuns([]);
     } finally {
-      setLoadingGithub(false);
+      if (mountedRef.current && reqSeq === githubReqSeqRef.current) {
+        setLoadingGithub(false);
+      }
     }
   }, [selectedGithubRepo, githubPat]);
 
   const loadForgejoRuns = useCallback(async () => {
+    const reqSeq = ++forgejoReqSeqRef.current;
     setLoadingForgejo(true);
     setForgejoError(null);
     try {
@@ -209,25 +149,29 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
           : '';
       const res = await fetch(`/api/forgejo/actions/runs${query}`);
       const data = await res.json().catch(() => ({}));
+      if (!mountedRef.current || reqSeq !== forgejoReqSeqRef.current) return;
       if (!res.ok) {
         throw new Error(data.error || 'Не удалось загрузить запуски Forgejo Actions');
       }
       setForgejoExternal(Boolean(data.externalConfigured));
       setForgejoRuns(Array.isArray(data.runs) ? data.runs : []);
     } catch (err) {
+      if (!mountedRef.current || reqSeq !== forgejoReqSeqRef.current) return;
       setForgejoError(err instanceof Error ? err.message : 'Ошибка Forgejo Actions');
     } finally {
-      setLoadingForgejo(false);
+      if (mountedRef.current && reqSeq === forgejoReqSeqRef.current) {
+        setLoadingForgejo(false);
+      }
     }
   }, [forgejoScope, activeProject.id]);
 
   useEffect(() => {
-    loadGitHubRuns();
-  }, [loadGitHubRuns]);
-
-  useEffect(() => {
-    loadForgejoRuns();
-  }, [loadForgejoRuns]);
+    if (providerTab === 'github') {
+      void loadGitHubRuns();
+    } else {
+      void loadForgejoRuns();
+    }
+  }, [providerTab, loadGitHubRuns, loadForgejoRuns]);
 
   useEffect(() => {
     setTeamRepoDraft(activeProject.githubRepo || '');
@@ -252,6 +196,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
           { headers }
         );
         const data = await res.json().catch(() => ({}));
+        if (!mountedRef.current) return;
         if (!res.ok) {
           throw new Error(data.error || 'Не удалось загрузить логи сборки');
         }
@@ -260,12 +205,15 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
           [run.id]: data as GitHubRunLogsResponse,
         }));
       } catch (err) {
+        if (!mountedRef.current) return;
         setGithubLogsErrorByRunId((prev) => ({
           ...prev,
           [run.id]: err instanceof Error ? err.message : 'Ошибка загрузки логов',
         }));
       } finally {
-        setLoadingGithubLogsId((prev) => (prev === run.id ? null : prev));
+        if (mountedRef.current) {
+          setLoadingGithubLogsId((prev) => (prev === run.id ? null : prev));
+        }
       }
     },
     [githubPat]
@@ -281,17 +229,6 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
     },
     [expandedGithubIds, githubLogsByRunId, loadingGithubLogsId, fetchGitHubRunLogs]
   );
-
-  const handleCopyLogText = async (key: string, text: string) => {
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedLogKey(key);
-      window.setTimeout(() => setCopiedLogKey((cur) => (cur === key ? null : cur)), 2000);
-    } catch {
-      // Ignore clipboard permission errors
-    }
-  };
 
   const handleRerunGitHub = async (run: CiWorkflowRun) => {
     if (!isAuthenticated) {
@@ -478,7 +415,11 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
               disabled={dispatchingForgejo}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-sky-700 bg-sky-50 border border-sky-200 rounded hover:bg-sky-100 disabled:opacity-50"
             >
-              <Play className={`w-3.5 h-3.5 ${dispatchingForgejo ? 'animate-pulse' : ''}`} />
+              {dispatchingForgejo ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
+              )}
               {dispatchingForgejo ? 'Запуск...' : 'Запустить проверку'}
             </button>
           )}
@@ -538,30 +479,18 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
 
             {/* Optional GitHub PAT for private repos & reruns */}
             <div className="flex items-center gap-2">
-              <div className="relative">
-                <KeyRound className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type={showPat ? 'text' : 'password'}
-                  value={githubPat}
-                  onChange={(e) => setGithubPat(e.target.value)}
-                  placeholder={
-                    githubTokenConfigured
-                      ? 'Ключ сервера активен (опц.)'
-                      : 'Ключ GitHub PAT для перезапуска'
-                  }
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="w-56 pl-7 pr-7 py-1 text-xs font-mono bg-white border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-sky-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPat((prev) => !prev)}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
-                  aria-label={showPat ? 'Скрыть ключ' : 'Показать ключ'}
-                >
-                  {showPat ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
+              <GitHubPatInput
+                value={githubPat}
+                onChange={setGithubPat}
+                show={showPat}
+                onToggleShow={() => setShowPat((prev) => !prev)}
+                placeholder={
+                  githubTokenConfigured
+                    ? 'Ключ сервера активен (опц.)'
+                    : 'Ключ GitHub PAT для перезапуска'
+                }
+                className="w-56"
+              />
             </div>
           </div>
 
@@ -628,7 +557,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
           ) : (
             <div className="divide-y divide-slate-200 border border-slate-200 rounded-md overflow-hidden">
               {githubRuns.map((run) => {
-                const visual = getRunVisual(run);
+                const visual = getCiRunVisual(run);
                 const isRerunning = rerunningGithubId === run.id;
                 const isExpanded = Boolean(expandedGithubIds[run.id]);
                 const logData = githubLogsByRunId[run.id];
@@ -691,11 +620,11 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                             <span>·</span>
                             <span className="font-sans">{run.actor}</span>
                             <span>·</span>
-                            <span>{formatRunDate(run.createdAt)}</span>
+                            <span>{formatDateTimeRu(run.createdAt)}</span>
                             {run.durationSec !== undefined && (
                               <>
                                 <span>·</span>
-                                <span>{formatDuration(run.durationSec)}</span>
+                                <span>{formatDurationSec(run.durationSec)}</span>
                               </>
                             )}
                           </div>
@@ -812,7 +741,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                                       </span>
                                       {job.durationSec !== undefined && (
                                         <span className="font-mono text-[11px] text-slate-500">
-                                          {formatDuration(job.durationSec)}
+                                          {formatDurationSec(job.durationSec)}
                                         </span>
                                       )}
                                     </div>
@@ -858,7 +787,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                                           <span>{step.name}</span>
                                           {step.durationSec !== undefined && (
                                             <span className="font-mono opacity-70">
-                                              ({formatDuration(step.durationSec)})
+                                              ({formatDurationSec(step.durationSec)})
                                             </span>
                                           )}
                                         </span>
@@ -873,28 +802,10 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                                   )}
 
                                   {job.logLines.length > 0 && (
-                                    <pre className="p-3 bg-slate-950 text-slate-100 font-mono text-[11px] leading-relaxed max-h-64 overflow-auto whitespace-pre-wrap break-words">
-                                      {job.logLines.map((line, lIdx) => {
-                                        const isErrLine =
-                                          /##\[error\]|\berror\b|ERR!|\bFAIL\b|Exception|Process completed with exit code [1-9]|TS\d{4}:/i.test(
-                                            line
-                                          );
-                                        return (
-                                          <div
-                                            key={lIdx}
-                                            className={
-                                              isErrLine
-                                                ? 'bg-rose-950/70 text-rose-200 px-1.5 -mx-1.5 rounded'
-                                                : line.startsWith('... (пропущено')
-                                                  ? 'text-slate-400 italic py-0.5'
-                                                  : ''
-                                            }
-                                          >
-                                            {line}
-                                          </div>
-                                        );
-                                      })}
-                                    </pre>
+                                    <CiLogPre
+                                      lines={job.logLines}
+                                      className="p-3 bg-slate-950 text-slate-100 font-mono text-[11px] leading-relaxed max-h-64 overflow-auto whitespace-pre-wrap break-words"
+                                    />
                                   )}
                                 </div>
                               );
@@ -972,7 +883,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
           ) : (
             <div className="divide-y divide-slate-200 border border-slate-200 rounded-md overflow-hidden">
               {forgejoRuns.map((run) => {
-                const visual = getRunVisual(run);
+                const visual = getCiRunVisual(run);
                 const isRerunning = rerunningForgejoId === run.id;
                 const isExpanded = Boolean(expandedRunIds[run.id]);
                 return (
@@ -1043,11 +954,11 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                             <span>·</span>
                             <span className="font-sans">{run.actor}</span>
                             <span>·</span>
-                            <span>{formatRunDate(run.updatedAt || run.createdAt)}</span>
+                            <span>{formatDateTimeRu(run.updatedAt || run.createdAt)}</span>
                             {run.durationSec !== undefined && (
                               <>
                                 <span>·</span>
-                                <span>{formatDuration(run.durationSec)}</span>
+                                <span>{formatDurationSec(run.durationSec)}</span>
                               </>
                             )}
                           </div>
@@ -1123,7 +1034,7 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                             </div>
                             {step.durationSec !== undefined && (
                               <span className="font-mono text-[11px] text-slate-400 shrink-0">
-                                {formatDuration(step.durationSec)}
+                                {formatDurationSec(step.durationSec)}
                               </span>
                             )}
                           </div>
@@ -1195,9 +1106,10 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                     </div>
                   )}
                   {job.logLines.length > 0 && (
-                    <pre className="p-4 bg-slate-950 text-slate-100 font-mono text-[11px] leading-relaxed overflow-auto max-h-[50vh] whitespace-pre-wrap break-words">
-                      {job.logLines.join('\n')}
-                    </pre>
+                    <CiLogPre
+                      lines={job.logLines}
+                      className="p-4 bg-slate-950 text-slate-100 font-mono text-[11px] leading-relaxed overflow-auto max-h-[50vh] whitespace-pre-wrap break-words"
+                    />
                   )}
                 </div>
               ))}

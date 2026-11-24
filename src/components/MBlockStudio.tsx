@@ -70,6 +70,11 @@ import {
 } from '../mblock/hardwareTransport.ts';
 import { OnboardSimulatorModule } from './OnboardSimulatorModule.tsx';
 import { MBlockUnitTestPanel } from './MBlockUnitTestPanel.tsx';
+import {
+  downloadTextOrBlobFile,
+  useCopyFeedback,
+  useTransientStatus,
+} from '../utils/formatters.ts';
 
 interface MBlockStudioProps {
   projectId: string;
@@ -100,7 +105,6 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     programs.find((p) => p.id === selectedProgramId) || programs[0];
 
   const [panelMode, setPanelMode] = useState<'tests' | 'live' | 'code' | 'history'>('live');
-  const [execMode, setExecMode] = useState<'live' | 'upload'>('live');
   const [codeLang, setCodeLang] = useState<'python' | 'codey' | 'cpp' | 'bundle'>('python');
   const [boardProfile, setBoardProfile] = useState<MakeblockBoardProfileId>('auriga_stm32');
   const [bundleFile, setBundleFile] = useState<'s2e' | 'header' | 'mext'>('s2e');
@@ -113,8 +117,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   );
   const boardProfileRef = useRef<MakeblockBoardProfileId>(boardProfile);
   boardProfileRef.current = boardProfile;
-  const [copied, setCopied] = useState(false);
-  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const { copiedKey, copyText } = useCopyFeedback(1600);
+  const copied = copiedKey === 'code';
+  const { statusMsg: saveFeedback, showStatus: showSaveFeedback } = useTransientStatus(1800);
   const [newVersionNote, setNewVersionNote] = useState('');
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = useState('');
@@ -197,6 +202,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const compiledRef = useRef<CompiledHandlers | null>(null);
   const tickTimersRef = useRef<number[]>([]);
   const physicsTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
 
   // Initialize Blockly workspace once
   useEffect(() => {
@@ -357,7 +363,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       stopSimulation();
       void disconnectWebSerial();
     };
@@ -367,7 +375,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const startSimulation = useCallback(async () => {
     stopSimulation();
     const workspace = workspaceRef.current;
-    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const latestJs = workspace
+      ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode
+      : jsCode;
 
     const { simApi, appendLog } = createSimRuntime(
       () => telemetryRef.current,
@@ -394,6 +404,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
       if (compiled.onBoot) {
         await compiled.onBoot();
       }
+      if (!runningRef.current || !mountedRef.current) return;
 
       for (const tick of compiled.ticks) {
         const ms = Math.max(400, tick.intervalSec * 1000);
@@ -421,7 +432,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
   const handleStepTick = async () => {
     const workspace = workspaceRef.current;
-    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const latestJs = workspace
+      ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode
+      : jsCode;
     const { simApi, appendLog } = createSimRuntime(
       () => telemetryRef.current,
       (updater) => setTelemetry(updater),
@@ -452,7 +465,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
   const handleSimulateThermalBurst = async () => {
     const workspace = workspaceRef.current;
-    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const latestJs = workspace
+      ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode
+      : jsCode;
     let simState = telemetryRef.current;
 
     const { simApi, appendLog } = createSimRuntime(
@@ -514,7 +529,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     setRunningPreflight(true);
     try {
       const workspace = workspaceRef.current;
-      const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+      const latestJs = workspace
+        ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode
+        : jsCode;
       const report = await runPreflightVerification(
         latestJs,
         activeProgram?.name || 'mBlock OBC'
@@ -534,7 +551,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
   const getLatestCodeAndJson = () => {
     const workspace = workspaceRef.current;
-    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const latestJs = workspace
+      ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode
+      : jsCode;
     const latestJson = workspace
       ? (Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>)
       : liveWorkspaceJson;
@@ -644,7 +663,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
   const sendTelecommand = async (cmd: string) => {
     const workspace = workspaceRef.current;
-    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const latestJs = workspace
+      ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode
+      : jsCode;
     if (!compiledRef.current) {
       const { simApi } = createSimRuntime(
         () => telemetryRef.current,
@@ -811,7 +832,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
           } catch {
             // port closed
           } finally {
-            setWebSerialConnected(false);
+            if (mountedRef.current) {
+              setWebSerialConnected(false);
+            }
           }
         })();
       }
@@ -866,8 +889,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
       cppCode: cpp,
       saveNote: customNote?.trim() || undefined,
     });
-    setSaveFeedback('Сохранено');
-    window.setTimeout(() => setSaveFeedback(null), 1800);
+    showSaveFeedback('Сохранено');
   };
 
   const handleLoadVersion = (version: ProgramVersion) => {
@@ -959,19 +981,11 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               : headerLibraryText;
 
   const handleCopyCode = () => {
-    navigator.clipboard?.writeText(displayedCode);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    void copyText('code', displayedCode);
   };
 
   const handleDownloadText = (content: string, filename: string) => {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadTextOrBlobFile(content, filename);
   };
 
   const handleDownloadCode = () => {
@@ -1159,10 +1173,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => {
-                setExecMode('live');
-                setPanelMode('live');
-              }}
+              onClick={() => setPanelMode('live')}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 panelMode === 'live'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -1173,10 +1184,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => {
-                setExecMode('upload');
-                setPanelMode('code');
-              }}
+              onClick={() => setPanelMode('code')}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 panelMode === 'code'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -1219,7 +1227,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
         </div>
       </div>
 
-      {/* mBlock 5 Device Manager, Live/Upload Mode & Hardware Transport Strip */}
+      {/* mBlock 5 Device Manager & Hardware Transport Strip */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-1.5 bg-slate-50 border-b border-slate-200 text-xs">
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Device Selector */}
@@ -1236,43 +1244,6 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               <option value="codey_esp32">CyberPi / ESP32</option>
               <option value="gizduino_avr">MeOrion / e-Gizmo AVR</option>
             </select>
-          </div>
-
-          {/* Live vs Upload Mode Toggle */}
-          <div className="inline-flex items-center p-0.5 bg-slate-200/70 rounded border border-slate-200">
-            <button
-              type="button"
-              onClick={() => {
-                setExecMode('live');
-                setPanelMode('live');
-              }}
-              className={`px-2.5 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
-                execMode === 'live'
-                  ? 'bg-emerald-600 text-white'
-                  : 'text-slate-700 hover:text-slate-900'
-              }`}
-            >
-              Live · Сцена
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setExecMode('upload');
-                setPanelMode('code');
-                if (boardProfile === 'codey_esp32') {
-                  setCodeLang('codey');
-                } else {
-                  setCodeLang('cpp');
-                }
-              }}
-              className={`px-2.5 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
-                execMode === 'upload'
-                  ? 'bg-sky-600 text-white'
-                  : 'text-slate-700 hover:text-slate-900'
-              }`}
-            >
-              Upload · Прошивка
-            </button>
           </div>
         </div>
 

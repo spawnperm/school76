@@ -9,6 +9,8 @@ import type {
 } from '../types/cubesat.ts';
 import { CHAT_CHANNELS } from '../types/cubesat.ts';
 import type { EngineerProfile } from '../hooks/useMissionSync.ts';
+import { filterProjectPrograms, filterProjectTasks } from '../constants/subsystems.ts';
+import { formatTimeRu, useCopyFeedback } from '../utils/formatters.ts';
 
 interface EngineeringChatProps {
   projectId: string;
@@ -53,14 +55,14 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [codeLang, setCodeLang] = useState<'python' | 'cpp'>('python');
   const [codeText, setCodeText] = useState('');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const { copiedKey: copiedId, copyText } = useCopyFeedback(1500);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (draftTaskRefId) setTaskRefId(draftTaskRefId);
-    if (draftProgramRefId) setProgramRefId(draftProgramRefId);
-  }, [draftTaskRefId, draftProgramRefId]);
+    setTaskRefId(draftTaskRefId || '');
+    setProgramRefId(draftProgramRefId || '');
+  }, [projectId, draftTaskRefId, draftProgramRefId]);
 
   const projectMessages = useMemo(
     () => messages.filter((m) => (m.projectId || 'school76-1u') === projectId),
@@ -68,12 +70,12 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
   );
 
   const projectTasks = useMemo(
-    () => tasks.filter((t) => (t.projectId || 'school76-1u') === projectId),
+    () => filterProjectTasks(tasks, projectId),
     [tasks, projectId]
   );
 
   const projectPrograms = useMemo(
-    () => programs.filter((p) => !p.projectId || p.projectId === projectId),
+    () => filterProjectPrograms(programs, projectId),
     [programs, projectId]
   );
 
@@ -114,9 +116,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
   };
 
   const handleCopySnippet = (id: string, code: string) => {
-    navigator.clipboard?.writeText(code);
-    setCopiedId(id);
-    window.setTimeout(() => setCopiedId(null), 1500);
+    void copyText(id, code);
   };
 
   return (
@@ -216,10 +216,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
               const refProgram = msg.programRefId
                 ? programs.find((p) => p.id === msg.programRefId)
                 : undefined;
-              const timeStr = new Date(msg.createdAt).toLocaleTimeString('ru-RU', {
-                hour: '2-digit',
-                minute: '2-digit',
-              });
+              const timeStr = formatTimeRu(msg.createdAt);
 
               return (
                 <article

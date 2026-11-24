@@ -4,27 +4,28 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { GitBranch, Terminal } from 'lucide-react';
 import { useMissionSync } from './hooks/useMissionSync.ts';
 import { TaskBoard } from './components/TaskBoard.tsx';
 import { MBlockStudio } from './components/MBlockStudio.tsx';
 import { EngineeringChat } from './components/EngineeringChat.tsx';
 import { WikiKnowledgeBase } from './components/WikiKnowledgeBase.tsx';
-import {
-  AuthModal,
-  CabinetView,
-  ProjectsView,
-} from './components/CommunitiesAndCabinet.tsx';
+import { AuthModal } from './components/AuthModal.tsx';
+import { CabinetView } from './components/CabinetView.tsx';
+import { ProjectsWorkspace } from './components/ProjectsWorkspace.tsx';
+import { CiActionsPanel } from './components/CiActionsPanel.tsx';
 import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
 import { MissionStatusBadge } from './components/MissionStatusBadge.tsx';
 import type { ChatChannelId, CommunityProject, CubeSatTask, Subsystem } from './types/cubesat.ts';
 
-type WorkspaceTab = 'projects' | 'tasks' | 'wiki' | 'mblock' | 'chat' | 'cabinet';
+type WorkspaceTab = 'projects' | 'tasks' | 'wiki' | 'mblock' | 'ci' | 'chat' | 'cabinet';
 
 const NAV_ITEMS: { id: Exclude<WorkspaceTab, 'cabinet'>; label: string }[] = [
   { id: 'projects', label: 'Проекты' },
   { id: 'tasks', label: 'Задачи' },
   { id: 'wiki', label: 'База знаний' },
   { id: 'mblock', label: 'mBlock ПО' },
+  { id: 'ci', label: 'CI/CD' },
   { id: 'chat', label: 'Техчат' },
 ];
 
@@ -133,7 +134,9 @@ export default function App() {
     setActiveTab('wiki');
   };
 
-  const handleDashboardNavigateTab = (tab: 'tasks' | 'wiki' | 'office' | 'mblock' | 'chat') => {
+  const handleDashboardNavigateTab = (
+    tab: 'tasks' | 'wiki' | 'office' | 'mblock' | 'ci' | 'chat'
+  ) => {
     if (tab === 'office') {
       setInitialWikiMode('office');
       setActiveTab('wiki');
@@ -219,7 +222,7 @@ export default function App() {
       {/* Active Workspace */}
       <div className="flex-1 min-h-0">
         {activeTab === 'projects' && (
-          <ProjectsView
+          <ProjectsWorkspace
             projects={projects}
             activeProjectId={activeProject.id}
             onSelectProject={setActiveProjectId}
@@ -310,6 +313,40 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'ci' && (
+          <div className="max-w-7xl mx-auto px-6 py-6 space-y-5">
+            <div className="bg-white border border-slate-200 rounded-lg px-5 py-4 flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-sky-600 shrink-0" />
+                  <h1 className="text-base font-bold text-slate-900">
+                    Сборка, CI/CD и синхронизация
+                  </h1>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Запуски GitHub Actions и Forgejo Actions для проекта «{activeProject.name}», диагностика логов и предпушевые проверки.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowGitHubModal(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap shrink-0"
+              >
+                <GitBranch className="w-3.5 h-3.5" />
+                Открыть GitHub Sync и тесты
+              </button>
+            </div>
+
+            <CiActionsPanel
+              projects={projects}
+              activeProject={activeProject}
+              isAuthenticated={Boolean(currentUser)}
+              onRequireAuth={() => setShowAuthModal(true)}
+              authFetch={authFetch}
+            />
+          </div>
+        )}
+
         {activeTab === 'chat' && (
           <EngineeringChat
             projectId={activeProject.id}
@@ -339,11 +376,10 @@ export default function App() {
             currentUser={currentUser}
             users={users}
             projects={projects}
+            tasks={tasks}
             posts={posts}
             activeProjectId={activeProject.id}
             authFetch={authFetch}
-            onLogin={login}
-            onRegister={register}
             onLogout={logout}
             onUpdateProfile={updateMyProfile}
             onToggleFollow={toggleFollow}

@@ -590,6 +590,35 @@ async function startServer() {
     return state.projects.find((p) => p.id === 'school76-1u') || state.projects[0];
   }
 
+  function commitProjectMarkdown(
+    project: CommunityProject,
+    opts: {
+      filepath: string;
+      md: string;
+      logTag: 'PROJECT' | 'TEAM' | 'TASK' | 'MBLOCK' | 'WALL' | 'CHAT' | 'AI';
+      summary: string;
+      author: string;
+      sectionLabel: string;
+      warnLabel: string;
+    }
+  ) {
+    try {
+      recordProjectChangeToForgejo({
+        repo: project.forgejoRepo,
+        projectName: project.name,
+        filepath: opts.filepath,
+        content: opts.md,
+        commitMessage: `[${opts.logTag}] ${opts.summary}`,
+        logTag: opts.logTag,
+        logSummary: opts.summary,
+        author: opts.author,
+        sectionLabel: opts.sectionLabel,
+      });
+    } catch (err) {
+      console.warn(`Forgejo ${opts.warnLabel} sync failed:`, err);
+    }
+  }
+
   function syncOverviewToForgejo(
     project: CommunityProject,
     logTag: 'PROJECT' | 'TEAM' | 'AI',
@@ -601,21 +630,15 @@ async function startServer() {
       .map((m) => `- **${m.displayName}** (@${m.username}) — ${m.role} · \`${m.subsystem}\``)
       .join('\n');
     const md = `# Проект «${project.name}»\n\n- **Идентификатор:** \`${project.id}\`\n- **Категория:** ${project.category}\n- **Репозиторий Forgejo:** \`school76/${project.forgejoRepo}\`\n- **Бакет Garage S3:** \`${project.s3Bucket}\`\n- **Теги:** ${project.tags.join(', ') || 'нет'}\n- **Обновлено:** ${new Date().toISOString()}\n\n## Описание\n\n${project.description || 'Описание пока не задано.'}\n\n## Команда разработки (${members.length})\n\n${memberLines || '- Участников пока нет'}\n`;
-    try {
-      recordProjectChangeToForgejo({
-        repo: project.forgejoRepo,
-        projectName: project.name,
-        filepath: 'project/overview.md',
-        content: md,
-        commitMessage: `[${logTag}] ${summary}`,
-        logTag,
-        logSummary: summary,
-        author,
-        sectionLabel: 'Паспорт проекта и состав команды',
-      });
-    } catch (err) {
-      console.warn('Forgejo overview sync failed:', err);
-    }
+    commitProjectMarkdown(project, {
+      filepath: 'project/overview.md',
+      md,
+      logTag,
+      summary,
+      author,
+      sectionLabel: 'Паспорт проекта и состав команды',
+      warnLabel: 'overview',
+    });
   }
 
   function syncTasksToForgejo(projectId: string | undefined, summary: string, author: string) {
@@ -635,21 +658,15 @@ async function startServer() {
       )
       .join('\n');
     const md = `# Задачи проекта «${project.name}»\n\n- **Всего задач:** ${projTasks.length}\n- **Выполнено:** ${done} (${pct}%)\n- **Обновлено:** ${new Date().toISOString()}\n\n| ID | Подсистема | Статус | Приоритет | Прогресс | Исполнитель | Срок | Задача |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n${rows || '| — | — | — | — | — | — | — | Задач пока нет |'}\n`;
-    try {
-      recordProjectChangeToForgejo({
-        repo: project.forgejoRepo,
-        projectName: project.name,
-        filepath: 'project/tasks.md',
-        content: md,
-        commitMessage: `[TASK] ${summary}`,
-        logTag: 'TASK',
-        logSummary: summary,
-        author,
-        sectionLabel: 'Реестр задач и прогресс подсистем',
-      });
-    } catch (err) {
-      console.warn('Forgejo tasks sync failed:', err);
-    }
+    commitProjectMarkdown(project, {
+      filepath: 'project/tasks.md',
+      md,
+      logTag: 'TASK',
+      summary,
+      author,
+      sectionLabel: 'Реестр задач и прогресс подсистем',
+      warnLabel: 'tasks',
+    });
   }
 
   function syncProgramsToForgejo(projectId: string | undefined, summary: string, author: string) {
@@ -665,21 +682,15 @@ async function startServer() {
       })
       .join('\n');
     const md = `# Бортовое ПО mBlock проекта «${project.name}»\n\nВсего программ: ${projPrograms.length}\n\n${sections || 'Программы ещё не добавлены.'}`;
-    try {
-      recordProjectChangeToForgejo({
-        repo: project.forgejoRepo,
-        projectName: project.name,
-        filepath: 'project/programs.md',
-        content: md,
-        commitMessage: `[MBLOCK] ${summary}`,
-        logTag: 'MBLOCK',
-        logSummary: summary,
-        author,
-        sectionLabel: 'Бортовые программы mBlock и версии',
-      });
-    } catch (err) {
-      console.warn('Forgejo programs sync failed:', err);
-    }
+    commitProjectMarkdown(project, {
+      filepath: 'project/programs.md',
+      md,
+      logTag: 'MBLOCK',
+      summary,
+      author,
+      sectionLabel: 'Бортовые программы mBlock и версии',
+      warnLabel: 'programs',
+    });
   }
 
   function syncWallToForgejo(projectId: string | undefined, summary: string, author: string) {
@@ -695,21 +706,15 @@ async function startServer() {
       })
       .join('\n---\n\n');
     const md = `# Стена сообщества «${project.name}»\n\n${blocks || 'Записей на стене пока нет.'}`;
-    try {
-      recordProjectChangeToForgejo({
-        repo: project.forgejoRepo,
-        projectName: project.name,
-        filepath: 'project/wall.md',
-        content: md,
-        commitMessage: `[WALL] ${summary}`,
-        logTag: 'WALL',
-        logSummary: summary,
-        author,
-        sectionLabel: 'Лента и обсуждения на стене проекта',
-      });
-    } catch (err) {
-      console.warn('Forgejo wall sync failed:', err);
-    }
+    commitProjectMarkdown(project, {
+      filepath: 'project/wall.md',
+      md,
+      logTag: 'WALL',
+      summary,
+      author,
+      sectionLabel: 'Лента и обсуждения на стене проекта',
+      warnLabel: 'wall',
+    });
   }
 
   function syncChatToForgejo(projectId: string | undefined, summary: string, author: string) {
@@ -733,21 +738,15 @@ async function startServer() {
       })
       .join('\n');
     const md = `# Журнал техчата «${project.name}»\n\n${lines || 'Сообщений пока нет.'}\n`;
-    try {
-      recordProjectChangeToForgejo({
-        repo: project.forgejoRepo,
-        projectName: project.name,
-        filepath: 'project/chat.md',
-        content: md,
-        commitMessage: `[CHAT] ${summary}`,
-        logTag: 'CHAT',
-        logSummary: summary,
-        author,
-        sectionLabel: 'Архив технического чата команды',
-      });
-    } catch (err) {
-      console.warn('Forgejo chat sync failed:', err);
-    }
+    commitProjectMarkdown(project, {
+      filepath: 'project/chat.md',
+      md,
+      logTag: 'CHAT',
+      summary,
+      author,
+      sectionLabel: 'Архив технического чата команды',
+      warnLabel: 'chat',
+    });
   }
 
   for (const proj of state.projects) {
@@ -1141,21 +1140,26 @@ async function startServer() {
     throw lastErr;
   }
 
-  app.post('/api/projects/:id/generate-description', requireAuth, async (req, res) => {
+  function requireProjectAndGeminiKey(
+    req: express.Request,
+    res: express.Response
+  ): { project: CommunityProject; apiKey: string } | null {
     const project = state.projects.find((p) => p.id === req.params.id);
     if (!project) {
       res.status(404).json({ error: 'Проект не найден' });
-      return;
+      return null;
     }
-
     const apiKey = process.env.GEMINI_API_KEY?.trim();
     if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
       res.status(503).json({
         error: 'GEMINI_API_KEY не настроен на сервере. Добавьте ключ в Settings > Secrets.',
       });
-      return;
+      return null;
     }
+    return { project, apiKey };
+  }
 
+  function buildProjectEngineeringDigest(project: CommunityProject) {
     const projectTasks = state.tasks.filter(
       (t) => (t.projectId || 'school76-1u') === project.id
     );
@@ -1175,30 +1179,55 @@ async function startServer() {
           )
         : 0;
 
-    const subsystemLines = (['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'] as Subsystem[])
+    const subsystemSummary = (['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'] as Subsystem[])
       .map((sub) => {
         const subTasks = projectTasks.filter((t) => t.subsystem === sub);
         if (subTasks.length === 0) return null;
         const subDone = subTasks.filter((t) => t.status === 'done').length;
+        const subActive = subTasks.filter(
+          (t) => t.status === 'in_progress' || t.status === 'review'
+        ).length;
         const subPct = Math.round((subDone / subTasks.length) * 100);
-        return `- ${sub}: выполнено ${subDone}/${subTasks.length} (${subPct}%)`;
+        return `- ${sub}: ${subDone}/${subTasks.length} готово (${subPct}%), в работе/проверке: ${subActive}`;
       })
       .filter(Boolean)
       .join('\n');
 
-    const taskLines = projectTasks
-      .slice(0, 25)
+    const taskDetails = projectTasks
+      .slice(0, 30)
       .map(
         (t) =>
-          `- [${t.id}] (${t.subsystem}, статус: ${t.status}, приоритет: ${t.priority}, прогресс: ${
+          `- [${t.id}] (${t.subsystem}, ${t.status}, приоритет: ${t.priority}, прогресс: ${
             t.status === 'done' ? 100 : t.progressPct ?? 0
-          }%, срок: ${t.dueDate || 'не задан'}): ${t.title}`
+          }%, срок: ${t.dueDate || '—'}, исполнитель: ${t.assignee}): ${t.title}`
       )
       .join('\n');
 
     const projectPrograms = state.programs.filter(
-      (p) => !p.projectId || p.projectId === project.id
+      (p) => (p.projectId || 'school76-1u') === project.id
     );
+    const members = state.users.filter((u) => project.memberIds.includes(u.id));
+
+    return {
+      total,
+      done,
+      review,
+      inProgress,
+      backlog,
+      overallPct,
+      avgProgressPct,
+      subsystemSummary,
+      taskDetails,
+      projectPrograms,
+      members,
+    };
+  }
+
+  app.post('/api/projects/:id/generate-description', requireAuth, async (req, res) => {
+    const ctx = requireProjectAndGeminiKey(req, res);
+    if (!ctx) return;
+    const { project, apiKey } = ctx;
+    const d = buildProjectEngineeringDigest(project);
 
     const promptText = `Сформируй актуальное техническое описание проекта на основе его задач и показателей прогресса.
 
@@ -1207,21 +1236,21 @@ async function startServer() {
 Теги: ${project.tags.join(', ') || 'нет'}
 Текущее описание: ${project.description || 'отсутствует'}
 Участников в команде: ${project.memberIds.length}
-Программ бортового ПО (mBlock): ${projectPrograms.length}
+Программ бортового ПО (mBlock): ${d.projectPrograms.length}
 
 Сводные показатели прогресса:
-- Всего задач: ${total}
-- Завершено: ${done} (${overallPct}%)
-- На проверке: ${review}
-- В работе: ${inProgress}
-- В бэклоге: ${backlog}
-- Средний прогресс по задачам: ${avgProgressPct}%
+- Всего задач: ${d.total}
+- Завершено: ${d.done} (${d.overallPct}%)
+- На проверке: ${d.review}
+- В работе: ${d.inProgress}
+- В бэклоге: ${d.backlog}
+- Средний прогресс по задачам: ${d.avgProgressPct}%
 
 Прогресс по подсистемам:
-${subsystemLines || '- Задачи по подсистемам ещё не добавлены'}
+${d.subsystemSummary || '- Задачи по подсистемам ещё не добавлены'}
 
 Список задач проекта:
-${taskLines || '- Задач пока нет'}`;
+${d.taskDetails || '- Задач пока нет'}`;
 
     try {
       const rawText = await generateGeminiTextWithRetry(
@@ -1254,61 +1283,16 @@ ${taskLines || '- Задач пока нет'}`;
   });
 
   app.post('/api/projects/:id/generate-readme', requireAuth, async (req, res) => {
-    const project = state.projects.find((p) => p.id === req.params.id);
-    if (!project) {
-      res.status(404).json({ error: 'Проект не найден' });
-      return;
-    }
+    const ctx = requireProjectAndGeminiKey(req, res);
+    if (!ctx) return;
+    const { project, apiKey } = ctx;
+    const d = buildProjectEngineeringDigest(project);
 
-    const apiKey = process.env.GEMINI_API_KEY?.trim();
-    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-      res.status(503).json({
-        error: 'GEMINI_API_KEY не настроен на сервере. Добавьте ключ в Settings > Secrets.',
-      });
-      return;
-    }
-
-    const projectTasks = state.tasks.filter(
-      (t) => (t.projectId || 'school76-1u') === project.id
-    );
-    const total = projectTasks.length;
-    const done = projectTasks.filter((t) => t.status === 'done').length;
-    const review = projectTasks.filter((t) => t.status === 'review').length;
-    const inProgress = projectTasks.filter((t) => t.status === 'in_progress').length;
-    const backlog = projectTasks.filter((t) => t.status === 'backlog').length;
-    const overallPct = total > 0 ? Math.round((done / total) * 100) : 0;
-
-    const subsystemSummary = (['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'] as Subsystem[])
-      .map((sub) => {
-        const subTasks = projectTasks.filter((t) => t.subsystem === sub);
-        if (subTasks.length === 0) return null;
-        const subDone = subTasks.filter((t) => t.status === 'done').length;
-        const subActive = subTasks.filter((t) => t.status === 'in_progress' || t.status === 'review').length;
-        const subPct = Math.round((subDone / subTasks.length) * 100);
-        return `- ${sub}: ${subDone}/${subTasks.length} готово (${subPct}%), в работе/проверке: ${subActive}`;
-      })
-      .filter(Boolean)
-      .join('\n');
-
-    const taskDetails = projectTasks
-      .slice(0, 30)
-      .map(
-        (t) =>
-          `- [${t.id}] (${t.subsystem}, ${t.status}, приоритет: ${t.priority}, прогресс: ${
-            t.status === 'done' ? 100 : t.progressPct ?? 0
-          }%, срок: ${t.dueDate || '—'}, исполнитель: ${t.assignee}): ${t.title}`
-      )
-      .join('\n');
-
-    const members = state.users.filter((u) => project.memberIds.includes(u.id));
-    const memberLines = members
+    const memberLines = d.members
       .map((m) => `- ${m.displayName} (@${m.username}) — ${m.role} [${m.subsystem}]`)
       .join('\n');
 
-    const projectPrograms = state.programs.filter(
-      (p) => (p.projectId || 'school76-1u') === project.id
-    );
-    const programLines = projectPrograms
+    const programLines = d.projectPrograms
       .map(
         (p) =>
           `- ${p.name} (${p.subsystem}, плата: ${p.targetBoard}, версий: ${
@@ -1347,22 +1331,22 @@ ${taskLines || '- Задач пока нет'}`;
 - Дата формирования: ${new Date().toISOString().slice(0, 10)}
 
 Текущий статус выполнения задач:
-- Всего задач: ${total}
-- Выполнено: ${done} (${overallPct}%)
-- На проверке: ${review}
-- В работе: ${inProgress}
-- В бэклоге: ${backlog}
+- Всего задач: ${d.total}
+- Выполнено: ${d.done} (${d.overallPct}%)
+- На проверке: ${d.review}
+- В работе: ${d.inProgress}
+- В бэклоге: ${d.backlog}
 
 Прогресс по подсистемам:
-${subsystemSummary || '- Задачи по подсистемам пока не добавлены'}
+${d.subsystemSummary || '- Задачи по подсистемам пока не добавлены'}
 
 Актуальные задачи:
-${taskDetails || '- Задачи пока не созданы'}
+${d.taskDetails || '- Задачи пока не созданы'}
 
 Программы бортового ПО (mBlock):
 ${programLines || '- Программы mBlock пока не добавлены'}
 
-Команда разработки (${members.length} чел.):
+Команда разработки (${d.members.length} чел.):
 ${memberLines || '- Участников пока нет'}
 
 Текущие файлы в репозитории Forgejo (school76/${project.forgejoRepo}):

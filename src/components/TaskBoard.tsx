@@ -27,6 +27,13 @@ import {
   TASK_PRIORITY_LABELS,
   TASK_STATUS_LABELS,
 } from '../types/cubesat.ts';
+import {
+  SUBSYSTEM_META,
+  SUBSYSTEM_ORDER,
+  computeSubsystemStats,
+  filterProjectTasks,
+} from '../constants/subsystems.ts';
+import { formatShortDateRu } from '../utils/formatters.ts';
 
 interface TaskBoardProps {
   projectId: string;
@@ -47,7 +54,7 @@ interface TaskBoardProps {
 }
 
 const STATUS_ORDER: TaskStatus[] = ['backlog', 'in_progress', 'review', 'done'];
-const SUBSYSTEM_FILTERS: ('ALL' | Subsystem)[] = ['ALL', 'OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'];
+const SUBSYSTEM_FILTERS: ('ALL' | Subsystem)[] = ['ALL', ...SUBSYSTEM_ORDER];
 
 const PRIORITY_TEXT_CLASS: Record<TaskPriority, string> = {
   low: 'text-slate-500',
@@ -56,23 +63,10 @@ const PRIORITY_TEXT_CLASS: Record<TaskPriority, string> = {
   critical: 'text-rose-700 font-semibold',
 };
 
-const SUBSYSTEM_BAR_CLASS: Record<Subsystem, string> = {
-  OBC: 'bg-sky-600',
-  EPS: 'bg-amber-500',
-  ADCS: 'bg-violet-600',
-  COMMS: 'bg-emerald-600',
-  PAYLOAD: 'bg-rose-500',
-  GROUND: 'bg-slate-600',
-};
-
 function parseIsoDate(iso?: string): Date | null {
   if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return null;
   const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
   return new Date(y, m - 1, d);
-}
-
-function formatShortDate(d: Date): string {
-  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 }
 
 export const TaskBoard: React.FC<TaskBoardProps> = ({
@@ -123,7 +117,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const [dueDate, setDueDate] = useState('2026-12-01');
 
   const projectTasks = useMemo(
-    () => tasks.filter((t) => (t.projectId || 'school76-1u') === projectId),
+    () => filterProjectTasks(tasks, projectId),
     [tasks, projectId]
   );
 
@@ -146,16 +140,16 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     [tasks, focusedTaskId]
   );
 
-  const subsystemProgress = useMemo(() => {
-    const subs: Subsystem[] = ['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'];
-    return subs.map((sub) => {
-      const subTasks = projectTasks.filter((t) => t.subsystem === sub);
-      const total = subTasks.length;
-      const done = subTasks.filter((t) => t.status === 'done').length;
-      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-      return { sub, total, done, pct };
-    });
-  }, [projectTasks]);
+  const subsystemProgress = useMemo(
+    () =>
+      computeSubsystemStats(projectTasks).map((s) => ({
+        sub: s.subsystem,
+        total: s.total,
+        done: s.done,
+        pct: s.pct,
+      })),
+    [projectTasks]
+  );
 
   const overallStats = useMemo(() => {
     const total = projectTasks.length;
@@ -412,7 +406,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {STATUS_ORDER.map((s) => (
-            <div key={s} className="h-64 bg-white border border-slate-200 rounded-lg animate-pulse" />
+            <div key={s} className="h-64 bg-white border border-slate-200 rounded-lg" />
           ))}
         </div>
       ) : filteredTasks.length === 0 ? (
@@ -525,8 +519,8 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs font-semibold text-slate-700">
-              График Ганта по задачам и зависимостям ({formatShortDate(ganttRange.days[0])} —{' '}
-              {formatShortDate(ganttRange.days[ganttRange.days.length - 1])})
+              График Ганта по задачам и зависимостям ({formatShortDateRu(ganttRange.days[0])} —{' '}
+              {formatShortDateRu(ganttRange.days[ganttRange.days.length - 1])})
             </div>
             <div className="text-xs text-slate-500">
               Нажмите на строку или полосу задачи для изменения сроков и прогресса
@@ -551,7 +545,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                         day.getDay() === 0 || day.getDay() === 6 ? 'bg-slate-100/70' : ''
                       }`}
                     >
-                      {idx % 2 === 0 ? formatShortDate(day) : day.getDate()}
+                      {idx % 2 === 0 ? formatShortDateRu(day) : day.getDate()}
                     </div>
                   ))}
                 </div>
@@ -615,11 +609,11 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                         >
                           <div
                             style={{ width: `${pct}%` }}
-                            className={`h-full ${SUBSYSTEM_BAR_CLASS[task.subsystem]} opacity-90`}
+                            className={`h-full ${SUBSYSTEM_META[task.subsystem].barClass} opacity-90`}
                           />
                           <span className="absolute inset-0 px-2 flex items-center justify-between text-[10px] font-mono font-medium text-slate-900 mix-blend-normal truncate">
                             <span className="bg-white/80 px-1 rounded truncate">
-                              {task.assignee.split(' ')[0]} · {formatShortDate(s)}–{formatShortDate(e)}
+                              {task.assignee.split(' ')[0]} · {formatShortDateRu(s)}–{formatShortDateRu(e)}
                             </span>
                           </span>
                         </div>

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   FileSpreadsheet,
   FileText,
@@ -23,6 +23,14 @@ import type {
 } from '../types/cubesat.ts';
 import { UniverOfficeEditor } from './UniverOfficeEditor.tsx';
 import { isOfficeFilename } from '../utils/univerConverters.ts';
+import { filterProjectTasks } from '../constants/subsystems.ts';
+import {
+  formatTimeRu,
+  uploadFileToS3,
+  useCopyFeedback,
+  useTransientStatus,
+} from '../utils/formatters.ts';
+import { SafeMarkdownView } from '../utils/markdown.tsx';
 
 interface WikiKnowledgeBaseProps {
   project: CommunityProject;
@@ -36,158 +44,6 @@ interface WikiKnowledgeBaseProps {
   onOpenGitHubSync?: () => void;
   authFetch: (url: string, options?: RequestInit) => Promise<any>;
 }
-
-function isSafeImageSrc(src: string): boolean {
-  return src.startsWith('/api/s3/') || src.startsWith('https://');
-}
-
-function renderInlineTokens(
-  text: string,
-  onOpenWikiLink: (target: string) => void
-): React.ReactNode[] {
-  // Tokenize [[wikilinks]], `inline code`, and **bold** safely without dangerouslySetInnerHTML
-  const pattern = /(\[\[[^\]]+\]\]|`[^`]+`|\*\*[^*]+\*\*)/g;
-  const parts = text.split(pattern);
-  return parts.map((part, idx) => {
-    if (part.startsWith('[[') && part.endsWith(']]')) {
-      const inner = part.slice(2, -2);
-      const [target, alias] = inner.split('|');
-      const cleanTarget = target.trim().replace(/\.md$/, '');
-      return (
-        <button
-          key={idx}
-          type="button"
-          onClick={() => onOpenWikiLink(`${cleanTarget}.md`)}
-          className="font-mono text-xs text-sky-700 bg-sky-50 hover:bg-sky-100 px-1.5 py-0.5 rounded transition-colors"
-        >
-          {alias || cleanTarget}
-        </button>
-      );
-    }
-    if (part.startsWith('`') && part.endsWith('`')) {
-      return (
-        <code key={idx} className="font-mono text-xs bg-slate-100 text-slate-800 px-1 py-0.5 rounded">
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return (
-        <strong key={idx} className="font-semibold text-slate-900">
-          {part.slice(2, -2)}
-        </strong>
-      );
-    }
-    return <React.Fragment key={idx}>{part}</React.Fragment>;
-  });
-}
-
-const SafeMarkdownView: React.FC<{
-  content: string;
-  onOpenWikiLink: (path: string) => void;
-}> = ({ content, onOpenWikiLink }) => {
-  const lines = content.split('\n');
-  const elements: React.ReactNode[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Fenced code block
-    if (line.trim().startsWith('```')) {
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      elements.push(
-        <pre
-          key={`code-${i}`}
-          className="bg-slate-950 text-slate-100 font-mono text-xs p-3.5 rounded-md overflow-x-auto my-3"
-        >
-          <code>{codeLines.join('\n')}</code>
-        </pre>
-      );
-      i++;
-      continue;
-    }
-
-    // Image ![alt](src)
-    const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-    if (imgMatch && isSafeImageSrc(imgMatch[2])) {
-      elements.push(
-        <figure key={`img-${i}`} className="my-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50">
-          <img
-            src={imgMatch[2]}
-            alt={imgMatch[1]}
-            referrerPolicy="no-referrer"
-            className="w-full max-h-[380px] object-contain bg-white"
-          />
-          {imgMatch[1] && (
-            <figcaption className="px-3 py-2 text-xs text-slate-500 border-t border-slate-200">
-              {imgMatch[1]}
-            </figcaption>
-          )}
-        </figure>
-      );
-      i++;
-      continue;
-    }
-
-    if (line.startsWith('# ')) {
-      elements.push(
-        <h1 key={`h1-${i}`} className="text-2xl font-bold text-slate-900 mt-1 mb-3">
-          {renderInlineTokens(line.slice(2), onOpenWikiLink)}
-        </h1>
-      );
-    } else if (line.startsWith('## ')) {
-      elements.push(
-        <h2 key={`h2-${i}`} className="text-lg font-semibold text-slate-900 mt-6 mb-2 border-b border-slate-200 pb-1">
-          {renderInlineTokens(line.slice(3), onOpenWikiLink)}
-        </h2>
-      );
-    } else if (line.startsWith('### ')) {
-      elements.push(
-        <h3 key={`h3-${i}`} className="text-base font-semibold text-slate-800 mt-4 mb-1.5">
-          {renderInlineTokens(line.slice(4), onOpenWikiLink)}
-        </h3>
-      );
-    } else if (line.startsWith('> ')) {
-      elements.push(
-        <blockquote key={`bq-${i}`} className="my-3 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-700">
-          {renderInlineTokens(line.slice(2), onOpenWikiLink)}
-        </blockquote>
-      );
-    } else if (/^[-*]\s+/.test(line)) {
-      elements.push(
-        <div key={`li-${i}`} className="flex items-start gap-2 text-sm text-slate-800 my-1 pl-2">
-          <span className="text-slate-400 select-none">•</span>
-          <span>{renderInlineTokens(line.replace(/^[-*]\s+/, ''), onOpenWikiLink)}</span>
-        </div>
-      );
-    } else if (/^\d+\.\s+/.test(line)) {
-      const num = line.match(/^(\d+)\.\s+/)?.[1];
-      elements.push(
-        <div key={`ol-${i}`} className="flex items-start gap-2 text-sm text-slate-800 my-1 pl-2">
-          <span className="font-mono text-xs text-slate-500 mt-0.5">{num}.</span>
-          <span>{renderInlineTokens(line.replace(/^\d+\.\s+/, ''), onOpenWikiLink)}</span>
-        </div>
-      );
-    } else if (line.trim() === '') {
-      elements.push(<div key={`sp-${i}`} className="h-2" />);
-    } else {
-      elements.push(
-        <p key={`p-${i}`} className="text-sm text-slate-800 leading-relaxed my-1.5">
-          {renderInlineTokens(line, onOpenWikiLink)}
-        </p>
-      );
-    }
-    i++;
-  }
-
-  return <div className="space-y-0.5">{elements}</div>;
-};
 
 export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
   project,
@@ -211,7 +67,7 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
   const [fileSha, setFileSha] = useState('');
   const [editorMode, setEditorMode] = useState<'read' | 'edit'>('read');
   const [commitMessage, setCommitMessage] = useState('');
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const { statusMsg, showStatus } = useTransientStatus(2600);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Modals: New Markdown file / Ingest to LLM-Wiki
@@ -222,73 +78,105 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
   const [ingestCategory, setIngestCategory] = useState<'concepts' | 'subsystems' | 'sources'>('concepts');
   const [ingestRaw, setIngestRaw] = useState('');
   const [ingesting, setIngesting] = useState(false);
-  const [copiedS3Key, setCopiedS3Key] = useState<string | null>(null);
+  const { copiedKey: copiedS3Key, copyText } = useCopyFeedback(1600);
+
+  const selectedPathRef = useRef(selectedPath);
+  selectedPathRef.current = selectedPath;
+  const reqSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const loadRepoData = useCallback(
     async (targetPath?: string) => {
+      const seq = ++reqSeqRef.current;
       try {
-        const [treeRes, commitsRes, s3Res] = await Promise.all([
-          fetch(`/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/git/trees/main`).then(
-            (r) => r.json()
-          ),
-          fetch(`/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/commits`).then((r) =>
-            r.json()
-          ),
-          fetch(`/api/s3/${encodeURIComponent(project.s3Bucket)}`).then((r) => r.json()),
+        const [treeResp, commitsResp, s3Resp] = await Promise.all([
+          fetch(`/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/git/trees/main`),
+          fetch(`/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/commits`),
+          fetch(`/api/s3/${encodeURIComponent(project.s3Bucket)}`),
         ]);
+        if (!treeResp.ok || !commitsResp.ok || !s3Resp.ok) {
+          throw new Error('Ошибка чтения репозитория Forgejo или Garage S3');
+        }
+        const [treeRes, commitsRes, s3Res] = await Promise.all([
+          treeResp.json(),
+          commitsResp.json(),
+          s3Resp.json(),
+        ]);
+        if (!mountedRef.current || seq !== reqSeqRef.current) return;
+
         if (Array.isArray(treeRes.tree)) setTree(treeRes.tree);
         if (Array.isArray(commitsRes.commits)) setCommits(commitsRes.commits);
         if (Array.isArray(s3Res.objects)) setS3Objects(s3Res.objects);
 
-        const pathToRead = targetPath || selectedPath;
+        const pathToRead = targetPath || selectedPathRef.current;
         const fileRes = await fetch(
           `/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/contents/${pathToRead}`
         );
+        if (!mountedRef.current || seq !== reqSeqRef.current) return;
         if (fileRes.ok) {
           const data = await fileRes.json();
+          if (!mountedRef.current || seq !== reqSeqRef.current) return;
           setSelectedPath(data.path);
           setFileContent(data.rawContent || '');
           setFileSha(data.sha || '');
         }
       } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : 'Ошибка загрузки Forgejo/Garage S3');
+        if (mountedRef.current && seq === reqSeqRef.current) {
+          setErrorMsg(err instanceof Error ? err.message : 'Ошибка загрузки Forgejo/Garage S3');
+        }
       }
     },
-    [project.forgejoRepo, project.s3Bucket, selectedPath]
+    [project.forgejoRepo, project.s3Bucket]
   );
 
   useEffect(() => {
     const startDoc = initialDocPath || 'index.md';
     setSelectedPath(startDoc);
-    loadRepoData(startDoc);
+    void loadRepoData(startDoc);
     if (initialDocPath) {
       setWorkspaceMode('wiki');
       onConsumeInitialDocPath?.();
     }
-  }, [project.id, initialDocPath]);
+  }, [project.id, initialDocPath, loadRepoData, onConsumeInitialDocPath]);
 
   useEffect(() => {
     if (initialWorkspaceMode) {
       setWorkspaceMode(initialWorkspaceMode);
       onConsumeInitialWorkspaceMode?.();
     }
-  }, [initialWorkspaceMode]);
+  }, [initialWorkspaceMode, onConsumeInitialWorkspaceMode]);
 
   const openFile = async (filepath: string) => {
+    const seq = ++reqSeqRef.current;
     setErrorMsg(null);
     setWorkspaceMode('wiki');
-    const res = await fetch(
-      `/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/contents/${filepath}`
-    );
-    if (!res.ok) {
-      setErrorMsg(`Страница ${filepath} не найдена в Forgejo`);
-      return;
+    try {
+      const res = await fetch(
+        `/api/v1/repos/school76/${encodeURIComponent(project.forgejoRepo)}/contents/${filepath}`
+      );
+      if (!mountedRef.current || seq !== reqSeqRef.current) return;
+      if (!res.ok) {
+        setErrorMsg(`Страница ${filepath} не найдена в Forgejo`);
+        return;
+      }
+      const data = await res.json();
+      if (!mountedRef.current || seq !== reqSeqRef.current) return;
+      setSelectedPath(data.path);
+      setFileContent(data.rawContent || '');
+      setFileSha(data.sha || '');
+      setEditorMode('read');
+    } catch (err) {
+      if (mountedRef.current && seq === reqSeqRef.current) {
+        setErrorMsg(err instanceof Error ? err.message : `Ошибка чтения ${filepath}`);
+      }
     }
-    const data = await res.json();
-    setSelectedPath(data.path);
-    setFileContent(data.rawContent || '');
-    setFileSha(data.sha || '');
-    setEditorMode('read');
   };
 
   const handleSaveToForgejo = async () => {
@@ -310,8 +198,7 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
       );
       setCommitMessage('');
       setEditorMode('read');
-      setStatusMsg('Коммит сохранён в Forgejo');
-      window.setTimeout(() => setStatusMsg(null), 2200);
+      showStatus('Коммит сохранён в Forgejo', 2200);
       await loadRepoData(selectedPath);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Не удалось сохранить файл');
@@ -380,8 +267,7 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
       setShowIngestModal(false);
       setIngestTitle('');
       setIngestRaw('');
-      setStatusMsg(`Скомпилировано в ${res.wikiPath} и добавлено в index.md`);
-      window.setTimeout(() => setStatusMsg(null), 3000);
+      showStatus(`Скомпилировано в ${res.wikiPath} и добавлено в index.md`, 3000);
       await loadRepoData(res.wikiPath);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Ошибка индексации llm-wiki');
@@ -399,12 +285,12 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
       const res = await authFetch(`/api/wiki/${encodeURIComponent(project.forgejoRepo)}/lint`, {
         method: 'POST',
       });
-      setStatusMsg(
+      showStatus(
         res.brokenLinks.length === 0
           ? `Lint: ${res.totalFiles} файлов проверено, битых ссылок нет`
-          : `Lint: найдено ${res.brokenLinks.length} битых ссылок (записано в log.md)`
+          : `Lint: найдено ${res.brokenLinks.length} битых ссылок (записано в log.md)`,
+        3500
       );
-      window.setTimeout(() => setStatusMsg(null), 3500);
       await loadRepoData('log.md');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Ошибка проверки ссылок');
@@ -419,28 +305,14 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
       onRequireAuth();
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const base64 = String(reader.result || '');
-        await authFetch(
-          `/api/s3/${encodeURIComponent(project.s3Bucket)}/${encodeURIComponent(file.name)}`,
-          {
-            method: 'PUT',
-            body: JSON.stringify({
-              base64,
-              contentType: file.type || 'application/octet-stream',
-            }),
-          }
-        );
-        setStatusMsg(`Загружено в Garage S3: ${file.name}`);
-        window.setTimeout(() => setStatusMsg(null), 2500);
-        await loadRepoData();
-      } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : 'Ошибка загрузки в Garage S3');
-      }
-    };
-    reader.readAsDataURL(file);
+    setErrorMsg(null);
+    try {
+      const uploaded = await uploadFileToS3(authFetch, project.s3Bucket, file);
+      showStatus(`Загружено в Garage S3: ${uploaded?.key || file.name}`, 2500);
+      await loadRepoData();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Ошибка загрузки в Garage S3');
+    }
   };
 
   const handleDeleteS3 = async (key: string) => {
@@ -462,12 +334,10 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
     const md = obj.contentType.startsWith('image/')
       ? `![${obj.key}](${obj.url})`
       : `[${obj.key}](${obj.url})`;
-    navigator.clipboard?.writeText(md);
-    setCopiedS3Key(obj.key);
+    void copyText(obj.key, md);
     if (editorMode === 'edit') {
       setFileContent((prev) => prev.trimEnd() + `\n\n${md}\n`);
     }
-    window.setTimeout(() => setCopiedS3Key(null), 1600);
   };
 
   return (
@@ -662,7 +532,7 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
         {workspaceMode === 'office' ? (
           <UniverOfficeEditor
             project={project}
-            tasks={tasks.filter((t) => (t.projectId || 'school76-1u') === project.id)}
+            tasks={filterProjectTasks(tasks, project.id)}
             s3Objects={s3Objects}
             isAuthenticated={isAuthenticated}
             onRequireAuth={onRequireAuth}
@@ -791,7 +661,7 @@ export const WikiKnowledgeBase: React.FC<WikiKnowledgeBaseProps> = ({
                   </span>
                 </div>
                 <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
-                  {c.author} · {new Date(c.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                  {c.author} · {formatTimeRu(c.timestamp)}
                 </span>
               </div>
             ))}

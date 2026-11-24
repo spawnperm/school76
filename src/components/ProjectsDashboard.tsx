@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitCommit,
   ListChecks,
+  Loader2,
   PieChart as PieChartIcon,
   RefreshCw,
   Sparkles,
@@ -30,6 +31,17 @@ import type {
   OnboardProgram,
   Subsystem,
 } from '../types/cubesat.ts';
+import {
+  SUBSYSTEM_META,
+  computeSubsystemStats,
+  filterProjectPrograms,
+} from '../constants/subsystems.ts';
+import {
+  downloadTextOrBlobFile,
+  formatDateTimeRu,
+  useCopyFeedback,
+} from '../utils/formatters.ts';
+import { SafeMarkdownView } from '../utils/markdown.tsx';
 
 interface GitRecentCommit {
   sha: string;
@@ -91,70 +103,6 @@ interface DeadlineAlert {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const SUBSYSTEM_ORDER: Subsystem[] = ['OBC', 'EPS', 'COMMS', 'PAYLOAD', 'ADCS', 'GROUND'];
-
-const SUBSYSTEM_RU_NAMES: Record<Subsystem, string> = {
-  OBC: 'ОБС',
-  EPS: 'ЭПС',
-  COMMS: 'Командная радиолиния',
-  PAYLOAD: 'Полезная нагрузка',
-  ADCS: 'ADCS · Ориентация',
-  GROUND: 'Наземный сегмент',
-};
-
-const SUBSYSTEM_ACCENT: Record<
-  Subsystem,
-  { bar: string; badge: string; borderHover: string; hex: string }
-> = {
-  OBC: {
-    bar: 'bg-sky-600',
-    badge: 'text-sky-700 bg-sky-50 border-sky-200',
-    borderHover: 'hover:border-sky-300',
-    hex: '#0284c7',
-  },
-  EPS: {
-    bar: 'bg-amber-500',
-    badge: 'text-amber-700 bg-amber-50 border-amber-200',
-    borderHover: 'hover:border-amber-300',
-    hex: '#f59e0b',
-  },
-  COMMS: {
-    bar: 'bg-emerald-600',
-    badge: 'text-emerald-700 bg-emerald-50 border-emerald-200',
-    borderHover: 'hover:border-emerald-300',
-    hex: '#059669',
-  },
-  PAYLOAD: {
-    bar: 'bg-rose-500',
-    badge: 'text-rose-700 bg-rose-50 border-rose-200',
-    borderHover: 'hover:border-rose-300',
-    hex: '#e11d48',
-  },
-  ADCS: {
-    bar: 'bg-violet-600',
-    badge: 'text-violet-700 bg-violet-50 border-violet-200',
-    borderHover: 'hover:border-violet-300',
-    hex: '#7c3aed',
-  },
-  GROUND: {
-    bar: 'bg-slate-600',
-    badge: 'text-slate-700 bg-slate-100 border-slate-200',
-    borderHover: 'hover:border-slate-300',
-    hex: '#475569',
-  },
-};
-
-function formatCommitDate(iso: string): string {
-  if (!iso) return '';
-  const dt = new Date(iso);
-  if (Number.isNaN(dt.getTime())) return '';
-  return dt.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
 function parseDeadlineTimestamp(dueDate?: string): number | null {
   if (!dueDate) return null;
@@ -214,7 +162,8 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
   const [readmeError, setReadmeError] = useState<string | null>(null);
   const [uploadingReadme, setUploadingReadme] = useState(false);
   const [uploadedCommit, setUploadedCommit] = useState<ForgejoCommit | null>(null);
-  const [copiedReadme, setCopiedReadme] = useState(false);
+  const { copiedKey, copyText } = useCopyFeedback(2000);
+  const copiedReadme = copiedKey === 'readme';
   const [readmeTab, setReadmeTab] = useState<'edit' | 'preview'>('preview');
 
   useEffect(() => {
@@ -305,31 +254,19 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
   }, [tasks]);
 
   const subsystemStats = useMemo(() => {
-    return SUBSYSTEM_ORDER.map((sub) => {
-      const subTasks = tasks.filter((t) => t.subsystem === sub);
-      const total = subTasks.length;
-      const done = subTasks.filter((t) => t.status === 'done').length;
-      const review = subTasks.filter((t) => t.status === 'review').length;
-      const inProgress = subTasks.filter((t) => t.status === 'in_progress').length;
-      const backlog = subTasks.filter((t) => t.status === 'backlog').length;
-      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-      const sharePct =
-        tasks.length > 0 ? Math.round((total / tasks.length) * 100) : 0;
-
-      return {
-        sub,
-        name: SUBSYSTEM_RU_NAMES[sub],
-        total,
-        done,
-        review,
-        inProgress,
-        backlog,
-        pct,
-        sharePct,
-        color: SUBSYSTEM_ACCENT[sub].hex,
-        urgentDeadlines: deadlineAnalysis.urgentBySubsystem.get(sub) || 0,
-      };
-    });
+    return computeSubsystemStats(tasks).map((s) => ({
+      sub: s.subsystem,
+      name: s.meta.ruName,
+      total: s.total,
+      done: s.done,
+      review: s.review,
+      inProgress: s.inProgress,
+      backlog: s.backlog,
+      pct: s.pct,
+      sharePct: tasks.length > 0 ? Math.round((s.total / tasks.length) * 100) : 0,
+      color: s.meta.hex,
+      urgentDeadlines: deadlineAnalysis.urgentBySubsystem.get(s.subsystem) || 0,
+    }));
   }, [tasks, deadlineAnalysis.urgentBySubsystem]);
 
   const pieData = useMemo(
@@ -338,9 +275,7 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
   );
 
   const mblockVersionsCount = useMemo(() => {
-    const projectPrograms = programs.filter(
-      (p) => !p.projectId || p.projectId === project.id
-    );
+    const projectPrograms = filterProjectPrograms(programs, project.id);
     return projectPrograms.reduce((acc, p) => acc + (p.versions?.length || 1), 0);
   }, [programs, project.id]);
 
@@ -446,26 +381,12 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
 
   const handleDownloadReadme = () => {
     if (!readmeDraft) return;
-    const blob = new Blob([readmeDraft], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'README.md';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadTextOrBlobFile(readmeDraft, 'README.md', 'text/markdown;charset=utf-8');
   };
 
-  const handleCopyReadme = async () => {
+  const handleCopyReadme = () => {
     if (!readmeDraft) return;
-    try {
-      await navigator.clipboard.writeText(readmeDraft);
-      setCopiedReadme(true);
-      window.setTimeout(() => setCopiedReadme(false), 2000);
-    } catch {
-      // Ignore clipboard permissions issues
-    }
+    void copyText('readme', readmeDraft);
   };
 
   const hasUrgent = deadlineAnalysis.urgentAll.length > 0;
@@ -502,7 +423,7 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
             title="Мониторинг дедлайнов задач (за 24 часа)"
           >
             {hasUrgent ? (
-              <BellRing className="w-3.5 h-3.5 animate-pulse" />
+              <BellRing className="w-3.5 h-3.5" />
             ) : (
               <Bell className="w-3.5 h-3.5" />
             )}
@@ -538,7 +459,11 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded hover:bg-violet-100 disabled:opacity-50"
               title="Автоматически сформировать описание проекта с ИИ на основе задач и прогресса"
             >
-              <Sparkles className={`w-3.5 h-3.5 ${generatingDescription ? 'animate-pulse' : ''}`} />
+              {generatingDescription ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
               {generatingDescription ? 'Генерация ИИ...' : 'Описание с ИИ'}
             </button>
           )}
@@ -550,7 +475,11 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded hover:bg-indigo-100 disabled:opacity-50"
               title="Сформировать README.md со структурой и текущим статусом проекта с помощью ИИ для Forgejo"
             >
-              <FileText className={`w-3.5 h-3.5 ${generatingReadme ? 'animate-pulse' : ''}`} />
+              {generatingReadme ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <FileText className="w-3.5 h-3.5" />
+              )}
               {generatingReadme ? 'Формирование README...' : 'README.md (ИИ)'}
             </button>
           )}
@@ -838,7 +767,7 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <div className="text-2xl font-bold font-mono tabular-nums text-slate-900">
-              {programs.filter((p) => !p.projectId || p.projectId === project.id).length}
+              {filterProjectPrograms(programs, project.id).length}
               <span className="text-xs font-sans font-normal text-slate-500 ml-1.5">
                 программ ПО
               </span>
@@ -910,19 +839,19 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {subsystemStats.map((item) => {
-              const accent = SUBSYSTEM_ACCENT[item.sub];
+              const meta = SUBSYSTEM_META[item.sub];
               const isComplete = item.total > 0 && item.pct === 100;
               return (
                 <button
                   key={item.sub}
                   type="button"
                   onClick={() => onOpenSubsystemTasks(item.sub)}
-                  className={`text-left p-3.5 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-white transition-all space-y-2 ${accent.borderHover}`}
+                  className={`text-left p-3.5 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-white transition-all space-y-2 ${meta.borderHoverClass}`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span
-                        className={`inline-flex items-center px-2 py-0.5 text-[11px] font-mono font-semibold border rounded ${accent.badge}`}
+                        className={`inline-flex items-center px-2 py-0.5 text-[11px] font-mono font-semibold border rounded ${meta.badgeClass}`}
                       >
                         {item.sub}
                       </span>
@@ -959,7 +888,7 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
                   >
                     <div
                       className={`h-full rounded-full transition-all duration-300 ${
-                        isComplete ? 'bg-emerald-600' : accent.bar
+                        isComplete ? 'bg-emerald-600' : meta.barClass
                       }`}
                       style={{ width: `${item.pct}%` }}
                     />
@@ -1113,7 +1042,7 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
                     <span className="font-mono text-slate-600">{commit.sha}</span>
                   </div>
                   <span className="font-mono text-slate-400 shrink-0">
-                    {formatCommitDate(commit.timestamp)}
+                    {formatDateTimeRu(commit.timestamp)}
                   </span>
                 </div>
                 <p className="text-xs text-slate-800 line-clamp-1 font-medium" title={commit.message}>
@@ -1238,60 +1167,8 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
                   className="w-full h-[420px] p-4 text-xs font-mono leading-relaxed text-slate-900 bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
                 />
               ) : (
-                <div className="bg-white border border-slate-200 rounded-md p-5 space-y-2 text-xs text-slate-800 leading-relaxed">
-                  {readmeDraft.split('\n').map((line, idx) => {
-                    if (line.startsWith('# ')) {
-                      return (
-                        <h1 key={idx} className="text-lg font-bold text-slate-900 pt-1 pb-1 border-b border-slate-200">
-                          {line.slice(2)}
-                        </h1>
-                      );
-                    }
-                    if (line.startsWith('## ')) {
-                      return (
-                        <h2 key={idx} className="text-sm font-bold text-slate-900 pt-3">
-                          {line.slice(3)}
-                        </h2>
-                      );
-                    }
-                    if (line.startsWith('### ')) {
-                      return (
-                        <h3 key={idx} className="text-xs font-bold text-slate-800 pt-2">
-                          {line.slice(4)}
-                        </h3>
-                      );
-                    }
-                    if (line.startsWith('```')) {
-                      return (
-                        <div key={idx} className="text-[10px] font-mono text-slate-400">
-                          {line}
-                        </div>
-                      );
-                    }
-                    if (line.startsWith('- ') || line.startsWith('* ')) {
-                      return (
-                        <div key={idx} className="pl-3 flex gap-1.5">
-                          <span className="text-slate-400">•</span>
-                          <span className="font-sans">{line.slice(2)}</span>
-                        </div>
-                      );
-                    }
-                    if (line.startsWith('|')) {
-                      return (
-                        <div key={idx} className="font-mono text-[11px] bg-slate-50 px-2 py-0.5 rounded overflow-x-auto whitespace-pre">
-                          {line}
-                        </div>
-                      );
-                    }
-                    if (!line.trim()) {
-                      return <div key={idx} className="h-1.5" />;
-                    }
-                    return (
-                      <p key={idx} className="whitespace-pre-wrap font-mono text-[11.5px] text-slate-700">
-                        {line}
-                      </p>
-                    );
-                  })}
+                <div className="bg-white border border-slate-200 rounded-md p-5">
+                  <SafeMarkdownView content={readmeDraft} />
                 </div>
               )}
             </div>
@@ -1304,7 +1181,11 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
                   disabled={generatingReadme}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100 disabled:opacity-50"
                 >
-                  <Sparkles className={`w-3.5 h-3.5 ${generatingReadme ? 'animate-pulse' : ''}`} />
+                  {generatingReadme ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5" />
+                  )}
                   {generatingReadme ? 'Обновление...' : 'Перегенерировать'}
                 </button>
                 <button

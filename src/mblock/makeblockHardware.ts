@@ -92,15 +92,16 @@ export function encodeMakeblockCommandFrame(
   value: number
 ): number[] {
   const buf = new ArrayBuffer(2);
-  new DataView(buf).setInt16(0, Math.round(value), true);
+  const view = new DataView(buf);
+  view.setInt16(0, Math.round(value), true);
   const payload = [
     0x00, // extIdx
     0x02, // action = runPackage
     deviceId & 0xff,
     port & 0xff,
     slot & 0xff,
-    buf ? new DataView(buf).getUint8(0) : 0,
-    buf ? new DataView(buf).getUint8(1) : 0,
+    view.getUint8(0),
+    view.getUint8(1),
   ];
   return [0xff, 0x55, payload.length, ...payload];
 }
