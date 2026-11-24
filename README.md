@@ -15,13 +15,13 @@
 ## Запуск
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Сервер запускается на `http://localhost:3000`. Для production-сборки:
 
 ```bash
-npm run build
-npm start
+pnpm build
+pnpm start
 ```

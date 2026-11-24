@@ -1,5 +1,5 @@
 import * as Blockly from 'blockly';
-import { pythonGenerator, Order as PyOrder } from 'blockly/python';
+import { PythonGenerator, pythonGenerator, Order as PyOrder } from 'blockly/python';
 import { javascriptGenerator, Order as JsOrder } from 'blockly/javascript';
 import type { MakeblockBoardProfileId } from './makeblockHardware.ts';
 
@@ -27,15 +27,8 @@ cppGenerator.scrub_ = function (block, code, thisOnly) {
   return code;
 };
 
-// Codey Rocky / CyberPi ESP32 MicroPython Generator (pattern from dr-one-life/codey-rocky)
-export const codeyGenerator = new Blockly.Generator('CODEY_PY');
-codeyGenerator.scrub_ = function (block, code, thisOnly) {
-  const nextBlock = block.nextConnection && block.nextConnection.targetBlock();
-  if (nextBlock && !thisOnly) {
-    return code + codeyGenerator.blockToCode(nextBlock);
-  }
-  return code;
-};
+// Codey Rocky / CyberPi ESP32 MicroPython Generator (inherits PythonGenerator helpers: quote_, init, finish, scrub_)
+export const codeyGenerator = new PythonGenerator('CODEY_PY');
 
 export function registerCubeSatGenerators() {
   if (generatorsRegistered) return;
@@ -468,6 +461,10 @@ export function registerCubeSatGenerators() {
   cppGenerator.forBlock['logic_negate'] = function (block, generator) {
     const val = generator.valueToCode(block, 'BOOL', CPP_ORDER.UNARY_POSTFIX) || 'false';
     return [`(!${val})`, CPP_ORDER.UNARY_POSTFIX];
+  };
+
+  cppGenerator.forBlock['logic_boolean'] = function (block) {
+    return [block.getFieldValue('BOOL') === 'TRUE' ? 'true' : 'false', CPP_ORDER.ATOMIC];
   };
 
   cppGenerator.forBlock['math_number'] = function (block) {
