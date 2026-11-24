@@ -2,18 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as Blockly from 'blockly';
 import * as Ru from 'blockly/msg/ru';
 import {
-  Play,
-  Square,
-  RotateCcw,
   Save,
   Plus,
   MessageSquare,
   Copy,
   Check,
   Download,
-  Sun,
-  Moon,
-  Zap,
   Trash2,
   History,
   Pencil,
@@ -32,9 +26,15 @@ import {
   bindCompiledHandlers,
   createInitialTelemetry,
   createSimRuntime,
+  runPreflightVerification,
+  stepCubeSatPhysics,
   type CompiledHandlers,
   type CubeSatTelemetry,
+  type FaultInjectionState,
+  type PreflightReport,
+  type SimScenarioId,
 } from '../mblock/simulator.ts';
+import { OnboardSimulatorModule } from './OnboardSimulatorModule.tsx';
 
 interface MBlockStudioProps {
   programs: OnboardProgram[];
@@ -80,9 +80,14 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const [newBoard, setNewBoard] = useState<TargetBoard>('CyberPi / ESP32 (MicroPython)');
   const [newDesc, setNewDesc] = useState('');
 
-  // Live CubeSat Hardware Simulator state
+  // Live CubeSat Hardware Simulator (HIL) state
+  const [scenario, setScenario] = useState<SimScenarioId>('leo_nominal');
   const [isRunning, setIsRunning] = useState(false);
-  const [telemetry, setTelemetry] = useState<CubeSatTelemetry>(createInitialTelemetry);
+  const [telemetry, setTelemetry] = useState<CubeSatTelemetry>(() =>
+    createInitialTelemetry('leo_nominal')
+  );
+  const [preflightReport, setPreflightReport] = useState<PreflightReport | null>(null);
+  const [runningPreflight, setRunningPreflight] = useState(false);
 
   const blocklyHostRef = useRef<HTMLDivElement | null>(null);
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null);
@@ -228,35 +233,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
       // Orbital physics & power budget tick (every 500ms)
       physicsTimerRef.current = window.setInterval(() => {
-        setTelemetry((prev) => {
-          const solarInputW = prev.inEclipse
-            ? 0
-            : (prev.solarMa['X+'] + prev.solarMa['Y+'] + prev.solarMa['Z+']) * 0.005;
-          const loadW =
-            1.1 +
-            (prev.rails.COMMS_3V3 ? 0.8 : 0) +
-            (prev.rails.ADCS_5V ? 1.2 : 0) +
-            (prev.rails.PAYLOAD_5V ? 2.4 : 0) +
-            (prev.heaterOn ? 1.5 : 0);
-          const netDeltaPct = (solarInputW - loadW) * 0.14;
-          const nextBat = Math.max(0, Math.min(100, prev.batteryPct + netDeltaPct));
-          const nextVolt = 6.4 + (nextBat / 100) * 1.9;
-          const nextBatTemp = prev.inEclipse
-            ? Math.max(-12, prev.temps.BAT - (prev.heaterOn ? -0.18 : 0.14))
-            : Math.min(34, prev.temps.BAT + (prev.heaterOn ? 0.25 : 0.08));
-
-          return {
-            ...prev,
-            batteryPct: nextBat,
-            batteryVolt: nextVolt,
-            watchdogAgeSec: prev.watchdogAgeSec + 0.5,
-            temps: {
-              ...prev.temps,
-              BAT: nextBatTemp,
-              OBC: prev.inEclipse ? Math.max(4, prev.temps.OBC - 0.06) : Math.min(38, prev.temps.OBC + 0.05),
-            },
-          };
-        });
+        setTelemetry((prev) => stepCubeSatPhysics(prev, 0.5));
       }, 500);
 
       if (compiled.onBoot) {
@@ -287,7 +264,84 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     }
   }, [activeProgram?.name, jsCode, stopSimulation]);
 
+  const handleStepTick = async () => {
+    const workspace = workspaceRef.current;
+    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const { simApi, appendLog } = createSimRuntime(
+      () => telemetryRef.current,
+      (updater) => setTelemetry(updater),
+      () => true,
+      true
+    );
+    try {
+      const compiled = compiledRef.current || bindCompiledHandlers(latestJs, simApi);
+      if (!compiledRef.current) {
+        compiledRef.current = compiled;
+        if (compiled.onBoot) await compiled.onBoot();
+      }
+      setTelemetry((prev) => stepCubeSatPhysics(prev, 1));
+      for (const tick of compiled.ticks) {
+        await tick.fn();
+      }
+    } catch (err) {
+      setTelemetry((prev) => ({
+        ...prev,
+        logs: appendLog(
+          prev,
+          'OBC',
+          `Ошибка шага: ${err instanceof Error ? err.message : 'Синтаксис'}`
+        ),
+      }));
+    }
+  };
+
+  const handleChangeScenario = (nextScenario: SimScenarioId) => {
+    stopSimulation();
+    setScenario(nextScenario);
+    setTelemetry(createInitialTelemetry(nextScenario));
+  };
+
+  const handleToggleFault = (key: keyof FaultInjectionState) => {
+    setTelemetry((prev) => ({
+      ...prev,
+      faults: {
+        ...prev.faults,
+        [key]: !prev.faults[key],
+      },
+    }));
+  };
+
+  const handleRunPreflight = async () => {
+    setRunningPreflight(true);
+    try {
+      const workspace = workspaceRef.current;
+      const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+      const report = await runPreflightVerification(
+        latestJs,
+        activeProgram?.name || 'mBlock OBC'
+      );
+      setPreflightReport(report);
+    } finally {
+      setRunningPreflight(false);
+    }
+  };
+
   const sendTelecommand = async (cmd: string) => {
+    const workspace = workspaceRef.current;
+    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    if (!compiledRef.current) {
+      const { simApi } = createSimRuntime(
+        () => telemetryRef.current,
+        (updater) => setTelemetry(updater),
+        () => true,
+        true
+      );
+      try {
+        compiledRef.current = bindCompiledHandlers(latestJs, simApi);
+      } catch {
+        // ignore
+      }
+    }
     const handler = compiledRef.current?.commands[cmd];
     setTelemetry((prev) => ({
       ...prev,
@@ -299,9 +353,9 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
           text: `Принята радиокоманда Земли: ${cmd}`,
         },
         ...prev.logs,
-      ].slice(0, 60),
+      ].slice(0, 80),
     }));
-    if (handler && runningRef.current) {
+    if (handler) {
       await handler();
     }
   };
@@ -532,206 +586,43 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
         {/* Right: Live 1U CubeSat Bench OR Python/C++ Code Panel */}
         <aside className="w-full lg:w-[440px] xl:w-[470px] flex flex-col bg-white min-h-0 overflow-y-auto">
           {panelMode === 'live' ? (
-            <div className="flex flex-col h-full">
-              {/* Execution Bar */}
-              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-200 bg-slate-50">
-                <div className="flex items-center gap-2">
-                  {!isRunning ? (
-                    <button
-                      type="button"
-                      onClick={startSimulation}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 rounded-md hover:bg-emerald-700 transition-colors whitespace-nowrap"
-                    >
-                      <Play className="w-3.5 h-3.5" />
-                      Запустить стенд
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={stopSimulation}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-rose-600 rounded-md hover:bg-rose-700 transition-colors whitespace-nowrap"
-                    >
-                      <Square className="w-3.5 h-3.5" />
-                      Остановить
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      stopSimulation();
-                      setTelemetry(createInitialTelemetry());
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Сброс
-                  </button>
-                </div>
-
-                <span
-                  className={`text-xs font-mono font-medium ${
-                    isRunning ? 'text-emerald-700' : 'text-slate-500'
-                  }`}
-                >
-                  {isRunning ? '● OBC активен' : '○ Остановлен'}
-                </span>
-              </div>
-
-              {/* Orbital Condition & Fault Injection Controls */}
-              <div className="px-4 py-3 border-b border-slate-200 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setTelemetry((p) => ({ ...p, inEclipse: !p.inEclipse }))
-                    }
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
-                      telemetry.inEclipse
-                        ? 'bg-slate-900 text-white border-slate-900'
-                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                    }`}
-                  >
-                    {telemetry.inEclipse ? (
-                      <Moon className="w-3.5 h-3.5" />
-                    ) : (
-                      <Sun className="w-3.5 h-3.5" />
-                    )}
-                    {telemetry.inEclipse ? 'Орбита: Тень Земли' : 'Орбита: Освещение'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setTelemetry((p) => ({
-                        ...p,
-                        gyro: { X: 16.4, Y: -11.2, Z: 8.7 },
-                      }))
-                    }
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
-                  >
-                    <Zap className="w-3.5 h-3.5" />
-                    Импульс вращения
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label
-                    htmlFor="sim-battery-slider"
-                    className="text-xs text-slate-600 whitespace-nowrap"
-                  >
-                    Тест АКБ
-                  </label>
-                  <input
-                    id="sim-battery-slider"
-                    type="range"
-                    min={5}
-                    max={100}
-                    step={1}
-                    value={Math.round(telemetry.batteryPct)}
-                    onChange={(e) => {
-                      const pct = Number(e.target.value);
-                      setTelemetry((p) => ({
-                        ...p,
-                        batteryPct: pct,
-                        batteryVolt: 6.4 + (pct / 100) * 1.9,
-                      }));
-                    }}
-                    className="flex-1 accent-sky-600"
-                  />
-                  <span className="text-xs font-mono tabular-nums text-slate-800 w-10 text-right">
-                    {telemetry.batteryPct.toFixed(0)}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Ground Telecommands */}
-              <div className="px-4 py-2.5 border-b border-slate-200">
-                <div className="text-xs font-medium text-slate-500 mb-2">
-                  Команды наземной станции (UHF 435.800 МГц)
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {['PING', 'CAPTURE', 'NOMINAL', 'SAFE', 'DETUMBLE'].map((cmd) => (
-                    <button
-                      key={cmd}
-                      type="button"
-                      onClick={() => sendTelecommand(cmd)}
-                      className="px-2.5 py-1 text-xs font-mono font-medium text-slate-700 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 rounded transition-colors"
-                    >
-                      {cmd}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Telemetry Readout Grid */}
-              <div className="px-4 py-3 border-b border-slate-200 grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs">
-                <div>
-                  <div className="text-slate-500">Режим OBC</div>
-                  <div className="font-mono font-semibold text-sm text-slate-900 mt-0.5">
-                    {telemetry.mode}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Батарея EPS</div>
-                  <div className="font-mono font-semibold text-sm text-slate-900 tabular-nums mt-0.5">
-                    {telemetry.batteryPct.toFixed(1)}% · {telemetry.batteryVolt.toFixed(2)} В
-                  </div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Гироскоп X/Y/Z (°/с)</div>
-                  <div className="font-mono font-medium text-slate-900 tabular-nums mt-0.5">
-                    {telemetry.gyro.X.toFixed(1)} / {telemetry.gyro.Y.toFixed(1)} / {telemetry.gyro.Z.toFixed(1)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Темп. OBC / АКБ</div>
-                  <div className="font-mono font-medium text-slate-900 tabular-nums mt-0.5">
-                    {telemetry.temps.OBC.toFixed(1)}°C / {telemetry.temps.BAT.toFixed(1)}°C
-                  </div>
-                </div>
-                <div className="col-span-2 pt-1 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-slate-500">Шины питания</span>
-                  <span className="font-mono text-[11px] text-slate-800">
-                    COMMS {telemetry.rails.COMMS_3V3 ? 'ВКЛ' : 'ВЫКЛ'} · ADCS {telemetry.rails.ADCS_5V ? 'ВКЛ' : 'ВЫКЛ'} · PAY {telemetry.rails.PAYLOAD_5V ? 'ВКЛ' : 'ВЫКЛ'}
-                  </span>
-                </div>
-                <div className="col-span-2 flex items-center justify-between">
-                  <span className="text-slate-500">Счётчики связи и ДЗЗ</span>
-                  <span className="font-mono text-[11px] tabular-nums text-slate-800">
-                    Маяки: {telemetry.beaconsSent} · TLM: {telemetry.packetsSent} · Кадры: {telemetry.imagesCaptured}
-                  </span>
-                </div>
-              </div>
-
-              {/* Live OBC Serial Console */}
-              <div className="flex-1 flex flex-col min-h-[160px] bg-slate-950 text-slate-100">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 text-xs text-slate-400">
-                  <span>Бортовой журнал UART / AX.25</span>
-                  <button
-                    type="button"
-                    onClick={() => setTelemetry((p) => ({ ...p, logs: [] }))}
-                    className="text-slate-400 hover:text-white transition-colors"
-                  >
-                    Очистить
-                  </button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed space-y-1">
-                  {telemetry.logs.length === 0 ? (
-                    <div className="text-slate-500">
-                      Нажмите «Запустить стенд», чтобы выполнить блоки mBlock на модели кубсата 1U.
-                    </div>
-                  ) : (
-                    telemetry.logs.map((log) => (
-                      <div key={log.id} className="flex gap-2">
-                        <span className="text-slate-500 shrink-0">{log.time}</span>
-                        <span className="text-sky-400 shrink-0 w-14">[{log.source}]</span>
-                        <span className="text-slate-200 break-words">{log.text}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
+            <OnboardSimulatorModule
+              programName={activeProgram?.name || 'mBlock OBC'}
+              telemetry={telemetry}
+              isRunning={isRunning}
+              scenario={scenario}
+              preflightReport={preflightReport}
+              runningPreflight={runningPreflight}
+              onChangeScenario={handleChangeScenario}
+              onStart={startSimulation}
+              onStop={stopSimulation}
+              onStepTick={handleStepTick}
+              onReset={() => {
+                stopSimulation();
+                setTelemetry(createInitialTelemetry(scenario));
+              }}
+              onToggleEclipse={() =>
+                setTelemetry((p) => ({ ...p, inEclipse: !p.inEclipse }))
+              }
+              onSpinImpulse={() =>
+                setTelemetry((p) => ({
+                  ...p,
+                  gyro: { X: 16.4, Y: -11.2, Z: 8.7 },
+                }))
+              }
+              onBatteryOverride={(pct) =>
+                setTelemetry((p) => ({
+                  ...p,
+                  batteryPct: pct,
+                  batteryVolt: 6.35 + (pct / 100) * 1.95,
+                }))
+              }
+              onToggleFault={handleToggleFault}
+              onSendCommand={sendTelecommand}
+              onClearLogs={() => setTelemetry((p) => ({ ...p, logs: [] }))}
+              onRunPreflight={handleRunPreflight}
+              onExportFirmware={handleDownloadCode}
+            />
           ) : panelMode === 'code' ? (
             /* Upload Mode: Synchronized Python / C++ Transpiler View */
             <div className="flex flex-col h-full">

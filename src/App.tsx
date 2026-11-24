@@ -15,7 +15,7 @@ import {
   ProjectsView,
 } from './components/CommunitiesAndCabinet.tsx';
 import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
-import type { ChatChannelId, CommunityProject, CubeSatTask } from './types/cubesat.ts';
+import type { ChatChannelId, CommunityProject, CubeSatTask, Subsystem } from './types/cubesat.ts';
 
 type WorkspaceTab = 'projects' | 'tasks' | 'wiki' | 'mblock' | 'chat' | 'cabinet';
 
@@ -50,6 +50,7 @@ export default function App() {
   const [draftTaskRefId, setDraftTaskRefId] = useState<string | null>(null);
   const [draftProgramRefId, setDraftProgramRefId] = useState<string | null>(null);
   const [initialWikiDoc, setInitialWikiDoc] = useState<string | null>(null);
+  const [initialTaskSubsystem, setInitialTaskSubsystem] = useState<Subsystem | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showGitHubModal, setShowGitHubModal] = useState(false);
 
@@ -212,6 +213,16 @@ export default function App() {
             }}
             onOpenWikiDoc={openWikiDocument}
             onOpenGitHubSync={() => setShowGitHubModal(true)}
+            onOpenSubsystemTasks={(sub) => {
+              setInitialTaskSubsystem(sub);
+              setActiveTab('tasks');
+            }}
+            onOpenSubsystemMBlock={(sub) => {
+              const matched =
+                programs.find((p) => p.subsystem === sub) || programs[0];
+              if (matched) setSelectedProgramId(matched.id);
+              setActiveTab('mblock');
+            }}
           />
         )}
 
@@ -230,6 +241,8 @@ export default function App() {
             onDeleteTask={deleteTask}
             onOpenProgram={openProgramInMBlock}
             onDiscussTask={openTaskInChat}
+            initialSubsystemFilter={initialTaskSubsystem}
+            onConsumeSubsystemFilter={() => setInitialTaskSubsystem(null)}
           />
         )}
 

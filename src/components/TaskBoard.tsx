@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Plus,
   Search,
@@ -41,6 +41,8 @@ interface TaskBoardProps {
   onDeleteTask: (id: string) => void;
   onOpenProgram: (programId: string) => void;
   onDiscussTask: (task: CubeSatTask) => void;
+  initialSubsystemFilter?: Subsystem | null;
+  onConsumeSubsystemFilter?: () => void;
 }
 
 const STATUS_ORDER: TaskStatus[] = ['backlog', 'in_progress', 'review', 'done'];
@@ -86,8 +88,17 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   onDeleteTask,
   onOpenProgram,
   onDiscussTask,
+  initialSubsystemFilter,
+  onConsumeSubsystemFilter,
 }) => {
   const [subsystemFilter, setSubsystemFilter] = useState<'ALL' | Subsystem>('ALL');
+
+  useEffect(() => {
+    if (initialSubsystemFilter) {
+      setSubsystemFilter(initialSubsystemFilter);
+      onConsumeSubsystemFilter?.();
+    }
+  }, [initialSubsystemFilter, onConsumeSubsystemFilter]);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'kanban' | 'gantt' | 'calendar' | 'todo' | 'table'>('kanban');
   const [showCreateModal, setShowCreateModal] = useState(false);

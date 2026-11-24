@@ -30,6 +30,7 @@ import type {
 } from '../types/cubesat.ts';
 import { SUBSYSTEM_LABELS } from '../types/cubesat.ts';
 import { HardwareBench } from './HardwareBench.tsx';
+import { CubeSat3DViewer } from './CubeSat3DViewer.tsx';
 
 function isSafeImageSrc(src: string): boolean {
   return src.startsWith('/api/s3/') || src.startsWith('https://');
@@ -741,6 +742,8 @@ interface ProjectsViewProps {
   onOpenChannel: (channel: ChatChannelId) => void;
   onOpenWikiDoc: (docPath: string) => void;
   onOpenGitHubSync: () => void;
+  onOpenSubsystemTasks: (subsystem: Subsystem) => void;
+  onOpenSubsystemMBlock: (subsystem: Subsystem) => void;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = ({
@@ -765,6 +768,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onOpenChannel,
   onOpenWikiDoc,
   onOpenGitHubSync,
+  onOpenSubsystemTasks,
+  onOpenSubsystemMBlock,
 }) => {
   const [communityTab, setCommunityTab] = useState<'wall' | 'members' | 'bench'>('wall');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -883,6 +888,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Interactive 3D CubeSat Twin colored by subsystem task readiness */}
+      <CubeSat3DViewer
+        projectName={activeProject.name}
+        tasks={projectTasks}
+        onOpenSubsystemTasks={onOpenSubsystemTasks}
+        onOpenSubsystemMBlock={onOpenSubsystemMBlock}
+      />
 
       {/* Directory Grid of Team Projects */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
