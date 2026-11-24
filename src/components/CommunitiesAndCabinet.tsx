@@ -12,6 +12,7 @@ import {
   Plus,
   Search,
   Send,
+  Sparkles,
   Upload,
   UserCheck,
   UserPlus,
@@ -31,6 +32,7 @@ import type {
 import { SUBSYSTEM_LABELS } from '../types/cubesat.ts';
 import { HardwareBench } from './HardwareBench.tsx';
 import { CubeSat3DViewer } from './CubeSat3DViewer.tsx';
+import { ProjectsDashboard } from './ProjectsDashboard.tsx';
 
 function isSafeImageSrc(src: string): boolean {
   return src.startsWith('/api/s3/') || src.startsWith('https://');
@@ -744,6 +746,8 @@ interface ProjectsViewProps {
   onOpenGitHubSync: () => void;
   onOpenSubsystemTasks: (subsystem: Subsystem) => void;
   onOpenSubsystemMBlock: (subsystem: Subsystem) => void;
+  onOpenTask: (taskId: string) => void;
+  onGenerateDescription: (projectId: string) => Promise<string>;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = ({
@@ -770,6 +774,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   onOpenGitHubSync,
   onOpenSubsystemTasks,
   onOpenSubsystemMBlock,
+  onOpenTask,
+  onGenerateDescription,
 }) => {
   const [communityTab, setCommunityTab] = useState<'wall' | 'members' | 'bench'>('wall');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -780,6 +786,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [newTags, setNewTags] = useState('CubeSat, mBlock, Telemetry');
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [generatingDescription, setGeneratingDescription] = useState(false);
+  const [descriptionError, setDescriptionError] = useState<string | null>(null);
 
   const activeProject =
     projects.find((p) => p.id === activeProjectId) || projects[0];
@@ -839,6 +847,25 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     }
   };
 
+  const handleGenerateDescription = async () => {
+    if (!activeProject) return;
+    if (!currentUser) {
+      onRequireAuth();
+      return;
+    }
+    setGeneratingDescription(true);
+    setDescriptionError(null);
+    try {
+      await onGenerateDescription(activeProject.id);
+    } catch (err) {
+      setDescriptionError(
+        err instanceof Error ? err.message : 'Не удалось сгенерировать описание проекта'
+      );
+    } finally {
+      setGeneratingDescription(false);
+    }
+  };
+
   if (!activeProject) {
     return (
       <div className="max-w-[1440px] mx-auto px-6 py-10 text-sm text-slate-500">
@@ -888,6 +915,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Summary Metrics Dashboard (Subsystem Tasks & Active Commits) */}
+      <ProjectsDashboard
+        project={activeProject}
+        tasks={projectTasks}
+        programs={programs}
+        membersCount={projectMembers.length}
+        onOpenSubsystemTasks={onOpenSubsystemTasks}
+        onNavigateTab={onNavigateTab}
+        onOpenGitHubSync={onOpenGitHubSync}
+        onOpenTask={onOpenTask}
+        onGenerateDescription={handleGenerateDescription}
+        generatingDescription={generatingDescription}
+        descriptionError={descriptionError}
+      />
 
       {/* Interactive 3D CubeSat Twin colored by subsystem task readiness */}
       <CubeSat3DViewer
@@ -1129,7 +1171,23 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
             <aside className="lg:col-span-4 space-y-4">
               <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-                <h3 className="text-sm font-semibold text-slate-900">О проекте</h3>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900">О проекте</h3>
+                  <button
+                    type="button"
+                    onClick={handleGenerateDescription}
+                    disabled={generatingDescription}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded hover:bg-violet-100 disabled:opacity-50"
+                  >
+                    <Sparkles className={`w-3 h-3 ${generatingDescription ? 'animate-pulse' : ''}`} />
+                    {generatingDescription ? 'Генерация...' : 'Сгенерировать с ИИ'}
+                  </button>
+                </div>
+                {descriptionError && (
+                  <div className="px-2.5 py-1.5 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded">
+                    {descriptionError}
+                  </div>
+                )}
                 <p className="text-xs text-slate-600 leading-relaxed">
                   {activeProject.description}
                 </p>

@@ -74,6 +74,7 @@ export default function App() {
     toggleFollow,
     createProject,
     toggleJoinProject,
+    generateProjectDescription,
     createPost,
     toggleLikePost,
     commentPost,
@@ -223,6 +224,8 @@ export default function App() {
               if (matched) setSelectedProgramId(matched.id);
               setActiveTab('mblock');
             }}
+            onOpenTask={openTaskInBoard}
+            onGenerateDescription={generateProjectDescription}
           />
         )}
 

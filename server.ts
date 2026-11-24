@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { fileURLToPath } from 'url';
+import { GoogleGenAI } from '@google/genai';
 import type {
   ChatChannelId,
   ChatMessage,
@@ -840,6 +841,119 @@ async function startServer() {
     saveState(state);
     broadcastSocialSync();
     res.json({ joined: !isMember, project });
+  });
+
+  app.post('/api/projects/:id/generate-description', requireAuth, async (req, res) => {
+    const project = state.projects.find((p) => p.id === req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Проект не найден' });
+      return;
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+      res.status(503).json({
+        error: 'GEMINI_API_KEY не настроен на сервере. Добавьте ключ в Settings > Secrets.',
+      });
+      return;
+    }
+
+    const projectTasks = state.tasks.filter(
+      (t) => (t.projectId || 'school76-1u') === project.id
+    );
+    const total = projectTasks.length;
+    const done = projectTasks.filter((t) => t.status === 'done').length;
+    const review = projectTasks.filter((t) => t.status === 'review').length;
+    const inProgress = projectTasks.filter((t) => t.status === 'in_progress').length;
+    const backlog = projectTasks.filter((t) => t.status === 'backlog').length;
+    const overallPct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const avgProgressPct =
+      total > 0
+        ? Math.round(
+            projectTasks.reduce(
+              (acc, t) => acc + (t.status === 'done' ? 100 : t.progressPct ?? 0),
+              0
+            ) / total
+          )
+        : 0;
+
+    const subsystemLines = (['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'] as Subsystem[])
+      .map((sub) => {
+        const subTasks = projectTasks.filter((t) => t.subsystem === sub);
+        if (subTasks.length === 0) return null;
+        const subDone = subTasks.filter((t) => t.status === 'done').length;
+        const subPct = Math.round((subDone / subTasks.length) * 100);
+        return `- ${sub}: выполнено ${subDone}/${subTasks.length} (${subPct}%)`;
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    const taskLines = projectTasks
+      .slice(0, 25)
+      .map(
+        (t) =>
+          `- [${t.id}] (${t.subsystem}, статус: ${t.status}, приоритет: ${t.priority}, прогресс: ${
+            t.status === 'done' ? 100 : t.progressPct ?? 0
+          }%, срок: ${t.dueDate || 'не задан'}): ${t.title}`
+      )
+      .join('\n');
+
+    const projectPrograms = state.programs.filter(
+      (p) => !p.projectId || p.projectId === project.id
+    );
+
+    const promptText = `Сформируй актуальное техническое описание проекта на основе его задач и показателей прогресса.
+
+Проект: ${project.name}
+Категория: ${project.category}
+Теги: ${project.tags.join(', ') || 'нет'}
+Текущее описание: ${project.description || 'отсутствует'}
+Участников в команде: ${project.memberIds.length}
+Программ бортового ПО (mBlock): ${projectPrograms.length}
+
+Сводные показатели прогресса:
+- Всего задач: ${total}
+- Завершено: ${done} (${overallPct}%)
+- На проверке: ${review}
+- В работе: ${inProgress}
+- В бэклоге: ${backlog}
+- Средний прогресс по задачам: ${avgProgressPct}%
+
+Прогресс по подсистемам:
+${subsystemLines || '- Задачи по подсистемам ещё не добавлены'}
+
+Список задач проекта:
+${taskLines || '- Задач пока нет'}`;
+
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      });
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: promptText,
+        config: {
+          systemInstruction:
+            'Ты главный системный инженер космических проектов school76. Напиши лаконичное, профессиональное описание проекта на русском языке (3–4 предложения, не длиннее 700 символов) в виде связного абзаца без markdown-заголовков и списков. Опирайся только на переданные задачи и метрики прогресса: отрази назначение проекта, текущую общую готовность, ключевые подсистемы в работе и ближайшие задачи.',
+        },
+      });
+
+      const generated = (response.text ?? '').replace(/\s+/g, ' ').trim();
+      if (!generated) {
+        res.status(502).json({ error: 'Модель вернула пустое описание проекта' });
+        return;
+      }
+
+      project.description = clampStr(generated, 800);
+      saveState(state);
+      broadcastSocialSync();
+      res.json({ description: project.description, project });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ошибка обращения к Gemini API';
+      console.error('AI project description error:', msg);
+      res.status(502).json({ error: `Ошибка генерации ИИ: ${msg.slice(0, 200)}` });
+    }
   });
 
   app.post('/api/posts', requireAuth, (req, res) => {

@@ -306,6 +306,22 @@ export function useMissionSync(activeTab: string) {
     [authFetch]
   );
 
+  const generateProjectDescription = useCallback(
+    async (projectId: string) => {
+      const data = await authFetch(
+        `/api/projects/${encodeURIComponent(projectId)}/generate-description`,
+        { method: 'POST' }
+      );
+      if (data.project) {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === data.project.id ? data.project : p))
+        );
+      }
+      return data.description as string;
+    },
+    [authFetch]
+  );
+
   const createPost = useCallback(
     async (payload: { text: string; projectId?: string; mediaUrls?: string[] }) => {
       const data = await authFetch('/api/posts', {
@@ -421,6 +437,7 @@ export function useMissionSync(activeTab: string) {
     toggleFollow,
     createProject,
     toggleJoinProject,
+    generateProjectDescription,
     createPost,
     toggleLikePost,
     commentPost,

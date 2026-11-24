@@ -7,6 +7,13 @@ export interface GitChangedFile {
   path: string;
 }
 
+export interface GitRecentCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
 export interface GitHubSyncStatus {
   gitAvailable: boolean;
   repo: string;
@@ -14,6 +21,8 @@ export interface GitHubSyncStatus {
   lastCommitSha: string;
   lastCommitMessage: string;
   lastCommitAt: string;
+  commitCount: number;
+  recentCommits: GitRecentCommit[];
   changedFiles: GitChangedFile[];
   aheadCount: number;
   tokenConfigured: boolean;
@@ -83,6 +92,8 @@ export function getGitHubStatus(rootDir: string): GitHubSyncStatus {
       lastCommitSha: '',
       lastCommitMessage: '',
       lastCommitAt: '',
+      commitCount: 0,
+      recentCommits: [],
       changedFiles: [],
       aheadCount: 0,
       tokenConfigured: Boolean(process.env.GITHUB_TOKEN?.trim()),
@@ -99,12 +110,33 @@ export function getGitHubStatus(rootDir: string): GitHubSyncStatus {
   let lastCommitSha = '';
   let lastCommitMessage = '';
   let lastCommitAt = '';
+  let commitCount = 0;
+  const recentCommits: GitRecentCommit[] = [];
   try {
-    const logOut = runGit(rootDir, ['log', '-n', '1', '--pretty=format:%h%x1f%s%x1f%cI']);
-    const [sha, msg, dt] = logOut.split('\x1f');
-    lastCommitSha = sha || '';
-    lastCommitMessage = msg || '';
-    lastCommitAt = dt || '';
+    const countOut = runGit(rootDir, ['rev-list', '--count', 'HEAD']);
+    commitCount = Number.parseInt(countOut, 10) || 0;
+  } catch {
+    commitCount = 0;
+  }
+
+  try {
+    const logOut = runGit(rootDir, ['log', '-n', '5', '--pretty=format:%h%x1f%s%x1f%an%x1f%cI']);
+    for (const line of logOut.split('\n')) {
+      if (!line.trim()) continue;
+      const [sha, msg, author, dt] = line.split('\x1f');
+      if (!sha) continue;
+      recentCommits.push({
+        sha,
+        message: msg || '',
+        author: author || 'engineer',
+        date: dt || '',
+      });
+    }
+    if (recentCommits.length > 0) {
+      lastCommitSha = recentCommits[0].sha;
+      lastCommitMessage = recentCommits[0].message;
+      lastCommitAt = recentCommits[0].date;
+    }
   } catch {
     // ignore
   }
@@ -138,6 +170,8 @@ export function getGitHubStatus(rootDir: string): GitHubSyncStatus {
     lastCommitSha,
     lastCommitMessage,
     lastCommitAt,
+    commitCount,
+    recentCommits,
     changedFiles,
     aheadCount,
     tokenConfigured: Boolean(process.env.GITHUB_TOKEN?.trim()),
