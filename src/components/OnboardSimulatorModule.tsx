@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
   CheckCircle2,
   Cpu,
@@ -22,6 +21,8 @@ import type {
   PreflightReport,
   SimScenarioId,
 } from '../mblock/simulator.ts';
+import { ThermalPowerHeatmap } from './ThermalPowerHeatmap.tsx';
+import { TelemetryLiveChartsWidget } from './TelemetryLiveChartsWidget.tsx';
 
 interface OnboardSimulatorModuleProps {
   programName: string;
@@ -34,6 +35,7 @@ interface OnboardSimulatorModuleProps {
   onStart: () => void;
   onStop: () => void;
   onStepTick: () => void;
+  onSimulateThermalBurst: () => void;
   onReset: () => void;
   onToggleEclipse: () => void;
   onSpinImpulse: () => void;
@@ -63,6 +65,7 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
   onStart,
   onStop,
   onStepTick,
+  onSimulateThermalBurst,
   onReset,
   onToggleEclipse,
   onSpinImpulse,
@@ -73,38 +76,7 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
   onRunPreflight,
   onExportFirmware,
 }) => {
-  const [simSubTab, setSimSubTab] = useState<'bench' | 'preflight' | 'faults'>('bench');
-
-  const chartPaths = useMemo(() => {
-    const pts = telemetry.history;
-    if (pts.length < 2) {
-      return { socPath: '', omegaPath: '' };
-    }
-    const w = 360;
-    const h = 76;
-    const maxOmega = Math.max(20, ...pts.map((p) => p.omegaMag));
-
-    const socPath = pts
-      .map((p, i) => {
-        const x = (i / (pts.length - 1)) * w;
-        const y = h - (p.batteryPct / 100) * (h - 8) - 4;
-        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(' ');
-
-    const omegaPath = pts
-      .map((p, i) => {
-        const x = (i / (pts.length - 1)) * w;
-        const y = h - (p.omegaMag / maxOmega) * (h - 8) - 4;
-        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(' ');
-
-    return { socPath, omegaPath };
-  }, [telemetry.history]);
-
-  const omegaMag = Math.hypot(telemetry.gyro.X, telemetry.gyro.Y, telemetry.gyro.Z);
-  const powerDelta = telemetry.solarPowerW - telemetry.loadPowerW;
+  const [simSubTab, setSimSubTab] = useState<'bench' | 'thermal' | 'preflight' | 'faults'>('bench');
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -187,39 +159,50 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
       </div>
 
       {/* Simulator Sub-Tabs */}
-      <div className="px-4 border-b border-slate-200 flex items-center gap-5 text-xs font-medium bg-white">
+      <div className="px-4 border-b border-slate-200 flex items-center gap-4 text-xs font-medium bg-white overflow-x-auto">
         <button
           type="button"
           onClick={() => setSimSubTab('bench')}
-          className={`py-2.5 border-b-2 transition-colors ${
+          className={`py-2.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
             simSubTab === 'bench'
               ? 'border-sky-600 text-slate-900'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
-          Телеметрия и команды
+          Телеметрия
+        </button>
+        <button
+          type="button"
+          onClick={() => setSimSubTab('thermal')}
+          className={`py-2.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+            simSubTab === 'thermal'
+              ? 'border-sky-600 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          Тепловая карта
         </button>
         <button
           type="button"
           onClick={() => setSimSubTab('faults')}
-          className={`py-2.5 border-b-2 transition-colors ${
+          className={`py-2.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
             simSubTab === 'faults'
               ? 'border-sky-600 text-slate-900'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
-          Стендовые отказы
+          Отказы
         </button>
         <button
           type="button"
           onClick={() => setSimSubTab('preflight')}
-          className={`py-2.5 border-b-2 transition-colors inline-flex items-center gap-1 ${
+          className={`py-2.5 border-b-2 transition-colors inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${
             simSubTab === 'preflight'
               ? 'border-sky-600 text-slate-900'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
-          Проверка перед деплоем
+          Перед деплоем
           {preflightReport && (
             <span
               className={`font-mono text-[11px] ${
@@ -300,39 +283,15 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
             </div>
           </div>
 
-          {/* Live Oscilloscope Chart */}
-          <div className="px-4 py-3 border-b border-slate-200 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] text-slate-500">
-              <span className="inline-flex items-center gap-1 font-medium text-slate-700">
-                <Activity className="w-3.5 h-3.5 text-sky-600" />
-                Осциллограмма (SoC% · |ω| °/с)
-              </span>
-              <span className="font-mono tabular-nums">
-                Генерация {telemetry.solarPowerW.toFixed(1)} Вт · Нагрузка {telemetry.loadPowerW.toFixed(1)} Вт ({powerDelta >= 0 ? '+' : ''}
-                {powerDelta.toFixed(1)} Вт)
-              </span>
-            </div>
-            <svg viewBox="0 0 360 76" className="w-full h-20 bg-slate-950 rounded-md border border-slate-800">
-              <line x1="0" y1="38" x2="360" y2="38" stroke="#1e293b" strokeDasharray="3 3" strokeWidth="1" />
-              {chartPaths.socPath && (
-                <path d={chartPaths.socPath} fill="none" stroke="#10b981" strokeWidth="2" />
-              )}
-              {chartPaths.omegaPath && (
-                <path d={chartPaths.omegaPath} fill="none" stroke="#38bdf8" strokeWidth="1.75" />
-              )}
-            </svg>
-            <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
-              <span className="text-emerald-700">— Заряд АКБ ({telemetry.batteryPct.toFixed(1)}%)</span>
-              <span className="text-sky-700">— |ω| ({omegaMag.toFixed(1)} °/с)</span>
-            </div>
-          </div>
+          {/* Real-Time Telemetry Line Charts Widget (Battery Voltage + CPU Load) */}
+          <TelemetryLiveChartsWidget telemetry={telemetry} isRunning={isRunning} />
 
           {/* Telemetry Readout Matrix */}
           <div className="px-4 py-3 border-b border-slate-200 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
             <div>
-              <div className="text-slate-500">Режим OBC</div>
-              <div className="font-mono font-semibold text-sm text-slate-900">
-                {telemetry.mode} · WDT {telemetry.watchdogAgeSec.toFixed(1)}с
+              <div className="text-slate-500">Режим OBC · ЦП</div>
+              <div className="font-mono font-semibold text-sm text-slate-900 tabular-nums">
+                {telemetry.mode} · {telemetry.cpuLoadPct.toFixed(0)}% · WDT {telemetry.watchdogAgeSec.toFixed(0)}с
               </div>
             </div>
             <div>
@@ -390,6 +349,14 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {simSubTab === 'thermal' && (
+        <ThermalPowerHeatmap
+          programName={programName}
+          telemetry={telemetry}
+          onSimulateThermalBurst={onSimulateThermalBurst}
+        />
       )}
 
       {simSubTab === 'faults' && (

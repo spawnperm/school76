@@ -11,6 +11,7 @@ export interface TelemetryPoint {
   t: number;
   batteryPct: number;
   batteryVolt: number;
+  cpuLoadPct: number;
   omegaMag: number;
   solarW: number;
   loadW: number;
@@ -39,7 +40,14 @@ export interface CubeSatTelemetry {
   magnetorquer: { X: number; Y: number; Z: number };
   txPowerDbm: number;
   radiationUsv: number;
-  temps: { OBC: number; BAT: number; CAM: number };
+  temps: { OBC: number; BAT: number; CAM: number; EPS: number; ADCS: number; COMMS: number };
+  subsystemWatts: {
+    OBC: number;
+    EPS: number;
+    ADCS: number;
+    COMMS: number;
+    PAYLOAD: number;
+  };
   watchdogAgeSec: number;
   watchdogResets: number;
   beaconsSent: number;
@@ -49,9 +57,190 @@ export interface CubeSatTelemetry {
   simTimeSec: number;
   solarPowerW: number;
   loadPowerW: number;
+  cpuLoadPct: number;
   faults: FaultInjectionState;
   history: TelemetryPoint[];
   logs: SimLogEntry[];
+}
+
+export interface ThermalNodeInfo {
+  id: 'OBC' | 'EPS' | 'ADCS' | 'COMMS' | 'PAYLOAD';
+  label: string;
+  boardName: string;
+  watts: number;
+  sharePct: number;
+  tempC: number;
+  limitMinC: number;
+  limitMaxC: number;
+  status: 'cold' | 'nominal' | 'warm' | 'overheat';
+  note: string;
+}
+
+export function computeSubsystemPowerWatts(state: Pick<
+  CubeSatTelemetry,
+  'mode' | 'rails' | 'heaterOn' | 'txPowerDbm' | 'magnetorquer' | 'solarPowerW' | 'faults'
+>): CubeSatTelemetry['subsystemWatts'] {
+  const obcW =
+    state.mode === 'SAFE' ? 0.55 : state.mode === 'SCIENCE' || state.mode === 'DETUMBLE' ? 1.15 : 0.92;
+
+  const mpptLossW = state.faults.brownoutMode ? 0 : state.solarPowerW * 0.12;
+  const heaterW = state.heaterOn ? 1.35 : 0;
+  const epsShortHeatW = state.faults.payloadRailShort && state.rails.PAYLOAD_5V ? 1.85 : 0;
+  const epsW = Number((0.35 + mpptLossW + heaterW + epsShortHeatW).toFixed(2));
+
+  const mtqEffort =
+    (Math.abs(state.magnetorquer.X) +
+      Math.abs(state.magnetorquer.Y) +
+      Math.abs(state.magnetorquer.Z)) /
+    300;
+  const adcsW = state.rails.ADCS_5V ? Number((0.45 + mtqEffort * 1.65).toFixed(2)) : 0;
+
+  const paW =
+    state.txPowerDbm >= 27 ? 1.85 : state.txPowerDbm >= 20 ? 0.85 : 0.35;
+  const jamExtraW = state.faults.commsRfJamming ? 0.75 : 0;
+  const commsW = state.rails.COMMS_3V3 ? Number((0.4 + paW + jamExtraW).toFixed(2)) : 0;
+
+  const payloadW = state.rails.PAYLOAD_5V
+    ? state.faults.payloadRailShort
+      ? 4.8
+      : 2.1
+    : 0;
+
+  return {
+    OBC: obcW,
+    EPS: epsW,
+    ADCS: adcsW,
+    COMMS: commsW,
+    PAYLOAD: payloadW,
+  };
+}
+
+export function computeCpuLoadPct(
+  state: Pick<
+    CubeSatTelemetry,
+    'mode' | 'rails' | 'txPowerDbm' | 'magnetorquer' | 'faults'
+  >,
+  timeSec = 0
+): number {
+  const modeBase =
+    state.mode === 'SAFE'
+      ? 14
+      : state.mode === 'SCIENCE'
+        ? 52
+        : state.mode === 'DETUMBLE'
+          ? 44
+          : 27;
+
+  const mtqActive =
+    (Math.abs(state.magnetorquer.X) +
+      Math.abs(state.magnetorquer.Y) +
+      Math.abs(state.magnetorquer.Z)) /
+    300;
+  const adcsTask = state.rails.ADCS_5V ? 7 + mtqActive * 15 : 0;
+  const commsTask = state.rails.COMMS_3V3
+    ? 6 + (state.txPowerDbm >= 27 ? 6 : 2) + (state.faults.commsRfJamming ? 7 : 0)
+    : 0;
+  const payloadTask = state.rails.PAYLOAD_5V
+    ? state.faults.payloadRailShort
+      ? 24
+      : 18
+    : 0;
+
+  const rtosJitter = timeSec > 0 ? Math.sin(timeSec * 1.9) * 2.4 + Math.cos(timeSec * 0.7) * 1.3 : 0;
+  const total = modeBase + adcsTask + commsTask + payloadTask + rtosJitter;
+  return Number(Math.max(6, Math.min(99, total)).toFixed(1));
+}
+
+export function getThermalNodesSnapshot(state: CubeSatTelemetry): ThermalNodeInfo[] {
+  const watts = computeSubsystemPowerWatts(state);
+  const totalW = Math.max(
+    0.1,
+    watts.OBC + watts.EPS + watts.ADCS + watts.COMMS + watts.PAYLOAD
+  );
+
+  const classify = (temp: number, minC: number, maxC: number): ThermalNodeInfo['status'] => {
+    if (temp < minC) return 'cold';
+    if (temp >= maxC) return 'overheat';
+    if (temp >= maxC - 10) return 'warm';
+    return 'nominal';
+  };
+
+  return [
+    {
+      id: 'COMMS',
+      label: 'COMMS · UHF 435.8 МГц',
+      boardName: 'Трансивер AX.25 и УМ RF',
+      watts: watts.COMMS,
+      sharePct: Math.round((watts.COMMS / totalW) * 100),
+      tempC: state.temps.COMMS,
+      limitMinC: -20,
+      limitMaxC: 60,
+      status: classify(state.temps.COMMS, -15, 58),
+      note: !state.rails.COMMS_3V3
+        ? 'Шина COMMS_3V3 отключена'
+        : state.faults.commsRfJamming
+          ? 'Рост КСВ / нагрев усилителя при помехе'
+          : `Усиление ${state.txPowerDbm} дБм`,
+    },
+    {
+      id: 'PAYLOAD',
+      label: 'PAYLOAD · Камера ДЗЗ',
+      boardName: 'Матрица 1280×720 и дозиметр',
+      watts: watts.PAYLOAD,
+      sharePct: Math.round((watts.PAYLOAD / totalW) * 100),
+      tempC: state.temps.CAM,
+      limitMinC: -10,
+      limitMaxC: 50,
+      status: classify(state.temps.CAM, -5, 48),
+      note: !state.rails.PAYLOAD_5V
+        ? 'Дежурный режим (0 Вт)'
+        : state.faults.payloadRailShort
+          ? 'Критический тепловой пик: КЗ шины PAYLOAD_5V'
+          : 'Активный захват кадров ДЗЗ',
+    },
+    {
+      id: 'OBC',
+      label: 'OBC · STM32F4 / ESP32',
+      boardName: 'Бортовой процессор и FRAM',
+      watts: watts.OBC,
+      sharePct: Math.round((watts.OBC / totalW) * 100),
+      tempC: state.temps.OBC,
+      limitMinC: -20,
+      limitMaxC: 65,
+      status: classify(state.temps.OBC, -15, 60),
+      note: `Режим ${state.mode} · WDT ${state.watchdogAgeSec.toFixed(1)}с`,
+    },
+    {
+      id: 'ADCS',
+      label: 'ADCS · IMU и катушки',
+      boardName: 'Магнитные торкеры X/Y/Z',
+      watts: watts.ADCS,
+      sharePct: Math.round((watts.ADCS / totalW) * 100),
+      tempC: state.temps.ADCS,
+      limitMinC: -15,
+      limitMaxC: 55,
+      status: classify(state.temps.ADCS, -10, 52),
+      note: !state.rails.ADCS_5V
+        ? 'Драйверы обесточены'
+        : `Катушки: ${state.magnetorquer.X}/${state.magnetorquer.Y}/${state.magnetorquer.Z}%`,
+    },
+    {
+      id: 'EPS',
+      label: 'EPS · MPPT и АКБ Li-Ion',
+      boardName: 'Контроллер питания и 2S сборка',
+      watts: watts.EPS,
+      sharePct: Math.round((watts.EPS / totalW) * 100),
+      tempC: Math.max(state.temps.EPS, state.temps.BAT),
+      limitMinC: 0,
+      limitMaxC: 48,
+      status: classify(Math.max(state.temps.EPS, state.temps.BAT), 0, 45),
+      note: state.heaterOn
+        ? 'Включён термоподогрев АКБ (+1.35 Вт)'
+        : state.faults.payloadRailShort
+          ? 'Перегрев ключа стабилизатора EPS'
+          : `АКБ ${state.temps.BAT.toFixed(1)}°C · MPPT ${state.solarPowerW.toFixed(1)} Вт`,
+    },
+  ];
 }
 
 export type SimScenarioId = 'leo_nominal' | 'low_battery' | 'high_tumble' | 'ground_pass';
@@ -95,7 +284,8 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     magnetorquer: { X: 0, Y: 0, Z: 0 },
     txPowerDbm: 20,
     radiationUsv: 0.48,
-    temps: { OBC: 22.4, BAT: 16.8, CAM: 14.2 },
+    temps: { OBC: 24.4, BAT: 16.8, CAM: 18.2, EPS: 23.1, ADCS: 21.5, COMMS: 27.6 },
+    subsystemWatts: { OBC: 0.92, EPS: 0.72, ADCS: 0.45, COMMS: 1.25, PAYLOAD: 0 },
     watchdogAgeSec: 0,
     watchdogResets: 0,
     beaconsSent: 0,
@@ -104,7 +294,8 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     lastBeaconText: 'SCHOOL76-1U READY',
     simTimeSec: 0,
     solarPowerW: 3.1,
-    loadPowerW: 2.3,
+    loadPowerW: 3.34,
+    cpuLoadPct: 36,
     faults: {
       brownoutMode: false,
       payloadRailShort: false,
@@ -116,9 +307,10 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
         t: 0,
         batteryPct: 74.2,
         batteryVolt: 7.94,
+        cpuLoadPct: 36,
         omegaMag: 5.4,
         solarW: 3.1,
-        loadW: 2.3,
+        loadW: 3.34,
       },
     ],
     logs: [],
@@ -128,19 +320,39 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     base.batteryPct = 21.5;
     base.batteryVolt = 6.81;
     base.inEclipse = true;
-    base.temps.BAT = 2.4;
+    base.temps = { OBC: 14.0, BAT: 1.8, CAM: 11.2, EPS: 12.5, ADCS: 13.0, COMMS: 16.4 };
     base.rails.PAYLOAD_5V = true;
     base.solarPowerW = 0;
   } else if (scenario === 'high_tumble') {
     base.mode = 'DETUMBLE';
     base.gyro = { X: 18.6, Y: -14.2, Z: 11.4 };
+    base.magnetorquer = { X: -95, Y: 82, Z: -68 };
+    base.temps.ADCS = 34.8;
     base.history[0].omegaMag = 26.0;
   } else if (scenario === 'ground_pass') {
     base.batteryPct = 82.0;
     base.batteryVolt = 8.09;
+    base.txPowerDbm = 27;
+    base.temps.COMMS = 39.2;
     base.gyro = { X: 0.9, Y: -0.6, Z: 0.4 };
     base.history[0].omegaMag = 1.15;
   }
+
+  base.subsystemWatts = computeSubsystemPowerWatts(base);
+  base.loadPowerW = Number(
+    (
+      base.subsystemWatts.OBC +
+      base.subsystemWatts.EPS +
+      base.subsystemWatts.ADCS +
+      base.subsystemWatts.COMMS +
+      base.subsystemWatts.PAYLOAD
+    ).toFixed(2)
+  );
+  base.cpuLoadPct = computeCpuLoadPct(base, 0);
+  base.history[0].batteryVolt = base.batteryVolt;
+  base.history[0].batteryPct = base.batteryPct;
+  base.history[0].cpuLoadPct = base.cpuLoadPct;
+  base.history[0].loadW = base.loadPowerW;
 
   return base;
 }
@@ -149,22 +361,28 @@ export function stepCubeSatPhysics(prev: CubeSatTelemetry, dtSec: number): CubeS
   const solarInputW =
     prev.inEclipse || prev.faults.brownoutMode
       ? 0
-      : ((prev.solarMa['X+'] + prev.solarMa['Y+'] + prev.solarMa['Z+']) * 0.0048);
+      : (prev.solarMa['X+'] + prev.solarMa['Y+'] + prev.solarMa['Z+']) * 0.0048;
 
+  const watts = computeSubsystemPowerWatts({
+    ...prev,
+    solarPowerW: solarInputW,
+  });
   const loadW =
-    0.95 +
-    (prev.rails.COMMS_3V3 ? 0.65 + (prev.txPowerDbm >= 27 ? 0.45 : 0) : 0) +
-    (prev.rails.ADCS_5V ? 0.85 : 0) +
-    (prev.rails.PAYLOAD_5V ? (prev.faults.payloadRailShort ? 4.8 : 2.1) : 0) +
-    (prev.heaterOn ? 1.35 : 0);
+    watts.OBC + watts.EPS + watts.ADCS + watts.COMMS + watts.PAYLOAD;
 
   const netDeltaPct = (solarInputW - loadW) * 0.16 * (dtSec / 0.5);
   const nextBat = Math.max(0, Math.min(100, prev.batteryPct + netDeltaPct));
   const nextVolt = 6.35 + (nextBat / 100) * 1.95;
 
+  const ambientC = prev.inEclipse ? -8 : 20;
+  const stepThermal = (currT: number, pWatts: number, kGain: number, kCool: number, minT: number, maxT: number) => {
+    const next = currT + (pWatts * kGain - (currT - ambientC) * kCool) * dtSec;
+    return Number(Math.max(minT, Math.min(maxT, next)).toFixed(2));
+  };
+
   const nextBatTemp = prev.inEclipse
-    ? Math.max(-14, prev.temps.BAT + (prev.heaterOn ? 0.18 : -0.14) * (dtSec / 0.5))
-    : Math.min(36, prev.temps.BAT + (prev.heaterOn ? 0.22 : 0.06) * (dtSec / 0.5));
+    ? Math.max(-14, prev.temps.BAT + (prev.heaterOn ? 0.24 : -0.14) * (dtSec / 0.5))
+    : Math.min(42, prev.temps.BAT + (prev.heaterOn ? 0.32 : 0.06) * (dtSec / 0.5));
 
   const nextGyro = prev.faults.gyroDisturbance
     ? {
@@ -177,11 +395,13 @@ export function stepCubeSatPhysics(prev: CubeSatTelemetry, dtSec: number): CubeS
   const nextWatchdog = prev.watchdogAgeSec + dtSec;
   const omegaMag = Math.hypot(nextGyro.X, nextGyro.Y, nextGyro.Z);
   const nextTime = prev.simTimeSec + dtSec;
+  const nextCpu = computeCpuLoadPct(prev, nextTime);
 
   const point: TelemetryPoint = {
     t: Number(nextTime.toFixed(1)),
     batteryPct: Number(nextBat.toFixed(1)),
     batteryVolt: Number(nextVolt.toFixed(2)),
+    cpuLoadPct: nextCpu,
     omegaMag: Number(omegaMag.toFixed(2)),
     solarW: Number(solarInputW.toFixed(2)),
     loadW: Number(loadW.toFixed(2)),
@@ -194,17 +414,17 @@ export function stepCubeSatPhysics(prev: CubeSatTelemetry, dtSec: number): CubeS
     batteryVolt: nextVolt,
     solarPowerW: solarInputW,
     loadPowerW: loadW,
+    cpuLoadPct: nextCpu,
+    subsystemWatts: watts,
     gyro: nextGyro,
     watchdogAgeSec: nextWatchdog,
     temps: {
-      ...prev.temps,
-      BAT: nextBatTemp,
-      OBC: prev.inEclipse
-        ? Math.max(4, prev.temps.OBC - 0.05)
-        : Math.min(38, prev.temps.OBC + 0.04),
-      CAM: prev.rails.PAYLOAD_5V
-        ? Math.min(41, prev.temps.CAM + 0.15)
-        : Math.max(8, prev.temps.CAM - 0.04),
+      OBC: stepThermal(prev.temps.OBC, watts.OBC, 0.85, 0.045, -18, 72),
+      BAT: Number(nextBatTemp.toFixed(2)),
+      CAM: stepThermal(prev.temps.CAM, watts.PAYLOAD, 0.95, 0.055, -14, 78),
+      EPS: stepThermal(prev.temps.EPS, watts.EPS, 0.92, 0.045, -14, 74),
+      ADCS: stepThermal(prev.temps.ADCS, watts.ADCS, 0.98, 0.05, -16, 70),
+      COMMS: stepThermal(prev.temps.COMMS, watts.COMMS, 1.05, 0.05, -18, 80),
     },
     history: [...prev.history.slice(-59), point],
   };

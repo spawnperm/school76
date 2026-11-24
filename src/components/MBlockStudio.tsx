@@ -12,6 +12,7 @@ import {
   History,
   Pencil,
   RotateCw,
+  FlaskConical,
 } from 'lucide-react';
 import type {
   OnboardProgram,
@@ -34,7 +35,16 @@ import {
   type PreflightReport,
   type SimScenarioId,
 } from '../mblock/simulator.ts';
+import {
+  analyzeWorkspaceBlocks,
+  buildPresetUnitTests,
+  runSingleUnitTest,
+  runUnitTestSuite,
+  type UnitTestCase,
+  type UnitTestSuiteReport,
+} from '../mblock/unitTests.ts';
 import { OnboardSimulatorModule } from './OnboardSimulatorModule.tsx';
+import { MBlockUnitTestPanel } from './MBlockUnitTestPanel.tsx';
 
 interface MBlockStudioProps {
   programs: OnboardProgram[];
@@ -62,11 +72,14 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const activeProgram =
     programs.find((p) => p.id === selectedProgramId) || programs[0];
 
-  const [panelMode, setPanelMode] = useState<'live' | 'code' | 'history'>('live');
+  const [panelMode, setPanelMode] = useState<'tests' | 'live' | 'code' | 'history'>('live');
   const [codeLang, setCodeLang] = useState<'python' | 'cpp'>('python');
   const [pythonCode, setPythonCode] = useState(activeProgram?.pythonCode || '');
   const [cppCode, setCppCode] = useState(activeProgram?.cppCode || '');
   const [jsCode, setJsCode] = useState('');
+  const [liveWorkspaceJson, setLiveWorkspaceJson] = useState<Record<string, unknown>>(
+    () => activeProgram?.workspaceJson || {}
+  );
   const [copied, setCopied] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [newVersionNote, setNewVersionNote] = useState('');
@@ -88,6 +101,11 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   );
   const [preflightReport, setPreflightReport] = useState<PreflightReport | null>(null);
   const [runningPreflight, setRunningPreflight] = useState(false);
+
+  // Visual Block Unit Testing state (per program)
+  const [unitTestsByProgram, setUnitTestsByProgram] = useState<Record<string, UnitTestCase[]>>({});
+  const [unitReportByProgram, setUnitReportByProgram] = useState<Record<string, UnitTestSuiteReport>>({});
+  const [runningUnitTests, setRunningUnitTests] = useState(false);
 
   const blocklyHostRef = useRef<HTMLDivElement | null>(null);
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null);
@@ -145,6 +163,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
       setPythonCode(py);
       setCppCode(cpp);
       setJsCode(js);
+      setLiveWorkspaceJson(Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>);
     };
 
     workspace.addChangeListener((event) => {
@@ -185,6 +204,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     setPythonCode(py);
     setCppCode(cpp);
     setJsCode(js);
+    setLiveWorkspaceJson(Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>);
   }, [activeProgram]);
 
   // Stop simulation cleanly
@@ -295,6 +315,50 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     }
   };
 
+  const handleSimulateThermalBurst = async () => {
+    const workspace = workspaceRef.current;
+    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    let simState = telemetryRef.current;
+
+    const { simApi, appendLog } = createSimRuntime(
+      () => simState,
+      (updater) => {
+        simState = updater(simState);
+      },
+      () => true,
+      true
+    );
+
+    try {
+      const compiled = bindCompiledHandlers(latestJs, simApi);
+      if (compiled.onBoot && simState.simTimeSec === 0) {
+        await compiled.onBoot();
+      }
+      for (let sec = 0; sec < 30; sec++) {
+        simState = stepCubeSatPhysics(simState, 1);
+        for (const tick of compiled.ticks) {
+          if (sec % Math.max(1, tick.intervalSec) === 0) {
+            await tick.fn();
+          }
+        }
+      }
+      simState = {
+        ...simState,
+        logs: appendLog(
+          simState,
+          'EPS',
+          `Тепловой прогон +30с: COMMS ${simState.temps.COMMS.toFixed(1)}°C, PAYLOAD ${simState.temps.CAM.toFixed(1)}°C, EPS ${simState.temps.EPS.toFixed(1)}°C`
+        ),
+      };
+      setTelemetry(simState);
+    } catch {
+      for (let sec = 0; sec < 30; sec++) {
+        simState = stepCubeSatPhysics(simState, 1);
+      }
+      setTelemetry(simState);
+    }
+  };
+
   const handleChangeScenario = (nextScenario: SimScenarioId) => {
     stopSimulation();
     setScenario(nextScenario);
@@ -324,6 +388,114 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     } finally {
       setRunningPreflight(false);
     }
+  };
+
+  // Visual Block Unit Testing helpers
+  const activeProgId = activeProgram?.id || 'default';
+  const activeUnitTests =
+    unitTestsByProgram[activeProgId] || buildPresetUnitTests(liveWorkspaceJson);
+  const activeUnitReport = unitReportByProgram[activeProgId] || null;
+  const staticAnalysis = analyzeWorkspaceBlocks(liveWorkspaceJson);
+
+  const getLatestCodeAndJson = () => {
+    const workspace = workspaceRef.current;
+    const latestJs = workspace ? generateCubeSatCode(workspace).jsCode : jsCode;
+    const latestJson = workspace
+      ? (Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>)
+      : liveWorkspaceJson;
+    return { latestJs, latestJson };
+  };
+
+  const handleRunAllUnitTests = async (overrideCases?: UnitTestCase[]) => {
+    setRunningUnitTests(true);
+    try {
+      const { latestJs, latestJson } = getLatestCodeAndJson();
+      const cases = overrideCases || activeUnitTests;
+      const report = await runUnitTestSuite(latestJs, latestJson, cases);
+      setUnitReportByProgram((prev) => ({ ...prev, [activeProgId]: report }));
+    } finally {
+      setRunningUnitTests(false);
+    }
+  };
+
+  const handleRunSingleUnitTest = async (testId: string) => {
+    const tc = activeUnitTests.find((t) => t.id === testId);
+    if (!tc) return;
+    setRunningUnitTests(true);
+    try {
+      const { latestJs, latestJson } = getLatestCodeAndJson();
+      const { result } = await runSingleUnitTest(latestJs, tc);
+      const analysis = analyzeWorkspaceBlocks(latestJson);
+
+      setUnitReportByProgram((prev) => {
+        const existing = prev[activeProgId];
+        const mergedResults = existing
+          ? [
+              ...existing.results.filter((r) => r.testId !== testId),
+              result,
+            ]
+          : [result];
+        const skippedCount = mergedResults.filter((r) => r.skipped).length;
+        const passedCount = mergedResults.filter((r) => !r.skipped && r.passed).length;
+        const failedCount = mergedResults.filter((r) => !r.skipped && !r.passed).length;
+
+        return {
+          ...prev,
+          [activeProgId]: {
+            executedAt: new Date().toISOString(),
+            staticAnalysis: analysis,
+            results: mergedResults,
+            passedCount,
+            failedCount,
+            skippedCount,
+            totalActive: mergedResults.length,
+            coveragePct: existing?.coveragePct ?? (result.passed ? 100 : 0),
+            coveredMethods: existing?.coveredMethods ?? [],
+            uncoveredMethods: existing?.uncoveredMethods ?? [],
+            readyForSimulator: !analysis.hasBlockingErrors && failedCount === 0 && passedCount > 0,
+          },
+        };
+      });
+    } finally {
+      setRunningUnitTests(false);
+    }
+  };
+
+  const handleToggleUnitTest = (testId: string) => {
+    const updated = activeUnitTests.map((t) =>
+      t.id === testId ? { ...t, enabled: !t.enabled } : t
+    );
+    setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: updated }));
+  };
+
+  const handleAddCustomUnitTest = (custom: UnitTestCase) => {
+    const updated = [...activeUnitTests, custom];
+    setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: updated }));
+    void handleRunAllUnitTests(updated);
+  };
+
+  const handleDeleteUnitTest = (testId: string) => {
+    const updated = activeUnitTests.filter((t) => t.id !== testId);
+    setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: updated }));
+  };
+
+  const handleResetUnitTests = () => {
+    const { latestJson } = getLatestCodeAndJson();
+    const fresh = buildPresetUnitTests(latestJson);
+    setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: fresh }));
+    setUnitReportByProgram((prev) => {
+      const copy = { ...prev };
+      delete copy[activeProgId];
+      return copy;
+    });
+  };
+
+  const handleFocusBlock = (blockId: string) => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    workspace.centerOnBlock(blockId);
+    const blk = workspace.getBlockById(blockId);
+    if (blk) blk.select();
   };
 
   const sendTelecommand = async (cmd: string) => {
@@ -522,6 +694,27 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
           <div className="flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg">
             <button
               type="button"
+              onClick={() => setPanelMode('tests')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                panelMode === 'tests'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <FlaskConical className="w-3.5 h-3.5 text-sky-600" />
+              Юнит-тесты
+              {activeUnitReport && (
+                <span
+                  className={`font-mono text-[10px] font-bold tabular-nums ${
+                    activeUnitReport.failedCount > 0 ? 'text-rose-600' : 'text-emerald-700'
+                  }`}
+                >
+                  {activeUnitReport.passedCount}/{activeUnitReport.totalActive}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setPanelMode('live')}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 panelMode === 'live'
@@ -576,16 +769,32 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
         </div>
       </div>
 
-      {/* Main Split Workspace: Blockly Canvas + Simulator/Code */}
+      {/* Main Split Workspace: Blockly Canvas + UnitTests/Simulator/Code */}
       <div className="flex-1 flex flex-col lg:flex-row min-h-0">
         {/* Left: Blockly Zelos mBlock Canvas */}
         <div className="flex-1 min-h-[380px] relative school76-blockly border-b lg:border-b-0 lg:border-r border-slate-200 bg-white">
           <div ref={blocklyHostRef} className="absolute inset-0" />
         </div>
 
-        {/* Right: Live 1U CubeSat Bench OR Python/C++ Code Panel */}
-        <aside className="w-full lg:w-[440px] xl:w-[470px] flex flex-col bg-white min-h-0 overflow-y-auto">
-          {panelMode === 'live' ? (
+        {/* Right: Unit Tests OR Live 1U CubeSat Bench OR Python/C++ Code Panel */}
+        <aside className="w-full lg:w-[460px] xl:w-[490px] flex flex-col bg-white min-h-0 overflow-y-auto">
+          {panelMode === 'tests' ? (
+            <MBlockUnitTestPanel
+              programName={activeProgram?.name || 'mBlock OBC'}
+              testCases={activeUnitTests}
+              staticAnalysis={staticAnalysis}
+              report={activeUnitReport}
+              running={runningUnitTests}
+              onRunAll={() => void handleRunAllUnitTests()}
+              onRunSingle={(testId) => void handleRunSingleUnitTest(testId)}
+              onToggleTest={handleToggleUnitTest}
+              onAddCustomTest={handleAddCustomUnitTest}
+              onDeleteTest={handleDeleteUnitTest}
+              onResetTests={handleResetUnitTests}
+              onFocusBlock={handleFocusBlock}
+              onProceedToSimulator={() => setPanelMode('live')}
+            />
+          ) : panelMode === 'live' ? (
             <OnboardSimulatorModule
               programName={activeProgram?.name || 'mBlock OBC'}
               telemetry={telemetry}
@@ -597,6 +806,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               onStart={startSimulation}
               onStop={stopSimulation}
               onStepTick={handleStepTick}
+              onSimulateThermalBurst={() => void handleSimulateThermalBurst()}
               onReset={() => {
                 stopSimulation();
                 setTelemetry(createInitialTelemetry(scenario));
