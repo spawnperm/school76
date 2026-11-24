@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Compass,
+  Copy,
   Cpu,
   Download,
   FlaskConical,
@@ -21,6 +23,13 @@ import type {
   PreflightReport,
   SimScenarioId,
 } from '../mblock/simulator.ts';
+import {
+  decodeMakeblockStreamFrame,
+} from '../mblock/makeblockHardware.ts';
+import {
+  generateTrajectoryPlan,
+  type TrajectoryModeId,
+} from '../mblock/kinematics.ts';
 import { ThermalPowerHeatmap } from './ThermalPowerHeatmap.tsx';
 import { TelemetryLiveChartsWidget } from './TelemetryLiveChartsWidget.tsx';
 
@@ -42,6 +51,7 @@ interface OnboardSimulatorModuleProps {
   onBatteryOverride: (pct: number) => void;
   onToggleFault: (key: keyof FaultInjectionState) => void;
   onSendCommand: (cmd: string) => void;
+  onCaptureMakeblockFrame: () => void;
   onClearLogs: () => void;
   onRunPreflight: () => void;
   onExportFirmware: () => void;
@@ -72,11 +82,22 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
   onBatteryOverride,
   onToggleFault,
   onSendCommand,
+  onCaptureMakeblockFrame,
   onClearLogs,
   onRunPreflight,
   onExportFirmware,
 }) => {
-  const [simSubTab, setSimSubTab] = useState<'bench' | 'thermal' | 'preflight' | 'faults'>('bench');
+  const [simSubTab, setSimSubTab] = useState<'bench' | 'thermal' | 'faults' | 'protocol' | 'preflight'>('bench');
+  const [trajectoryMode, setTrajectoryMode] = useState<TrajectoryModeId>('zenith_pass');
+  const [waypointIdx, setWaypointIdx] = useState(6);
+  const [copiedGcode, setCopiedGcode] = useState(false);
+
+  const trajectoryPlan = React.useMemo(
+    () => generateTrajectoryPlan(trajectoryMode),
+    [trajectoryMode]
+  );
+  const safeWaypointIdx = Math.min(waypointIdx, Math.max(0, trajectoryPlan.waypoints.length - 1));
+  const activeWaypoint = trajectoryPlan.waypoints[safeWaypointIdx];
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -195,6 +216,17 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
         </button>
         <button
           type="button"
+          onClick={() => setSimSubTab('protocol')}
+          className={`py-2.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+            simSubTab === 'protocol'
+              ? 'border-sky-600 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          0xFF55 · Трекер
+        </button>
+        <button
+          type="button"
           onClick={() => setSimSubTab('preflight')}
           className={`py-2.5 border-b-2 transition-colors inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${
             simSubTab === 'preflight'
@@ -307,13 +339,31 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
               </div>
             </div>
             <div>
-              <div className="text-slate-500">Связь и ДЗЗ</div>
+              <div className="text-slate-500">MeGyro Углы (P/R/Y)</div>
               <div className="font-mono text-slate-800 tabular-nums">
-                М:{telemetry.beaconsSent} · TLM:{telemetry.packetsSent} · ДЗЗ:{telemetry.imagesCaptured}
+                {telemetry.angles.X.toFixed(1)}° / {telemetry.angles.Y.toFixed(1)}° / {telemetry.angles.Z.toFixed(0)}°
+                <span className="ml-1.5 text-[10px] text-slate-500">
+                  {telemetry.gyroCalibrated ? 'CAL' : 'RAW'}
+                </span>
               </div>
             </div>
-            <div className="col-span-2 pt-1.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-slate-500">Шины 3.3V/5V</span>
+            <div>
+              <div className="text-slate-500">Связь, ДЗЗ и 0xFF55</div>
+              <div className="font-mono text-slate-800 tabular-nums">
+                М:{telemetry.beaconsSent} · TLM:{telemetry.packetsSent} · 55:{telemetry.makeblockFramesCount}
+              </div>
+            </div>
+            <div className="col-span-2 pt-1.5 border-t border-slate-100 flex items-center justify-between gap-2 text-[11px]">
+              <span className="inline-flex items-center gap-1.5 text-slate-600">
+                <span
+                  className="w-2.5 h-2.5 rounded-full border border-slate-300 shrink-0"
+                  style={{
+                    backgroundColor: `rgb(${telemetry.ledRgb.r}, ${telemetry.ledRgb.g}, ${telemetry.ledRgb.b})`,
+                  }}
+                  title={`MeRGBLed: (${telemetry.ledRgb.r}, ${telemetry.ledRgb.g}, ${telemetry.ledRgb.b})`}
+                />
+                LED ({telemetry.ledRgb.r},{telemetry.ledRgb.g},{telemetry.ledRgb.b})
+              </span>
               <span className="font-mono text-slate-800">
                 COMMS:{telemetry.rails.COMMS_3V3 ? 'ON' : 'OFF'} · ADCS:{telemetry.rails.ADCS_5V ? 'ON' : 'OFF'} · PAY:{telemetry.rails.PAYLOAD_5V ? 'ON' : 'OFF'}
               </span>
@@ -415,6 +465,220 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
               </button>
             );
           })}
+        </div>
+      )}
+
+      {simSubTab === 'protocol' && (
+        <div className="p-4 space-y-4 overflow-y-auto flex-1">
+          {/* Makeblock 0xFF 0x55 Serial Frame Inspector */}
+          <div className="border border-slate-200 rounded-lg p-3.5 space-y-2.5 bg-white">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900">
+                  Бинарный протокол UART 0xFF 0x55 (MeHostParser)
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Формат пакетов Makeblock mBot/Auriga: float32 LE с декодером телеметрии.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCaptureMakeblockFrame}
+                className="px-2.5 py-1.5 text-[11px] font-semibold text-white bg-sky-600 rounded-md hover:bg-sky-700 transition-colors shrink-0"
+              >
+                Снять кадр
+              </button>
+            </div>
+
+            {telemetry.makeblockFrames.length === 0 ? (
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded text-[11px] text-slate-500">
+                Нажмите «Снять кадр» или вызовите блок «передать бинарный кадр 0xFF 0x55» в цикле программы.
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                {telemetry.makeblockFrames.slice(0, 8).map((frm) => {
+                  const decoded = decodeMakeblockStreamFrame(frm.bytes);
+                  return (
+                    <div
+                      key={frm.id}
+                      className="px-2.5 py-2 bg-slate-950 text-slate-100 rounded border border-slate-800 font-mono text-[10px] space-y-0.5"
+                    >
+                      <div className="flex items-center justify-between text-slate-400">
+                        <span className="text-sky-400 font-semibold">{frm.deviceLabel}</span>
+                        <span>
+                          {frm.time} · decoded={decoded.valid ? String(decoded.value) : 'ERR'} ({decoded.typeName})
+                        </span>
+                      </div>
+                      <div className="text-emerald-400 tracking-wide">{frm.hex}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* mDrawBot Ground-Station Az-El Rotor & SCARA Kinematics Trajectory */}
+          <div className="border border-slate-200 rounded-lg p-3.5 space-y-3 bg-white">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Compass className="w-3.5 h-3.5 text-sky-600" />
+                  Траектория наведения ротора Yagi / ДЗЗ (mDrawBot)
+                </h4>
+                <p className="text-[11px] text-slate-500 truncate">
+                  {trajectoryPlan.title}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(trajectoryPlan.gcodeProgram);
+                    setCopiedGcode(true);
+                    window.setTimeout(() => setCopiedGcode(false), 1500);
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded hover:bg-slate-100"
+                >
+                  <Copy className="w-3 h-3" />
+                  {copiedGcode ? 'OK' : 'G-code'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const blob = new Blob([trajectoryPlan.gcodeProgram], { type: 'text/plain;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `school76_${trajectoryMode}.gcode`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded hover:bg-slate-100"
+                >
+                  <Download className="w-3 h-3" />
+                  .gcode
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {(
+                [
+                  { id: 'zenith_pass', label: 'Зенитный проход 78°' },
+                  { id: 'low_pass', label: 'Низкий проход 34°' },
+                  { id: 'raster_scan', label: 'Растр ДЗЗ (XY)' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    setTrajectoryMode(opt.id);
+                    setWaypointIdx(0);
+                  }}
+                  className={`px-2 py-1 text-[11px] font-medium rounded border transition-colors ${
+                    trajectoryMode === opt.id
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Polar Skyplot SVG (0..360 Azimuth, 0..90 Elevation) */}
+            <div className="bg-slate-950 rounded-md border border-slate-800 p-3 flex flex-col sm:flex-row items-center gap-3">
+              <svg viewBox="0 0 180 180" className="w-36 h-36 shrink-0 select-none">
+                <circle cx="90" cy="90" r="76" fill="none" stroke="#1e293b" strokeWidth="1" />
+                <circle cx="90" cy="90" r="50.6" fill="none" stroke="#1e293b" strokeDasharray="3 3" strokeWidth="1" />
+                <circle cx="90" cy="90" r="25.3" fill="none" stroke="#1e293b" strokeDasharray="3 3" strokeWidth="1" />
+                <line x1="14" y1="90" x2="166" y2="90" stroke="#1e293b" strokeWidth="1" />
+                <line x1="90" y1="14" x2="90" y2="166" stroke="#1e293b" strokeWidth="1" />
+                <text x="90" y="10" textAnchor="middle" fill="#64748b" fontSize="8" fontFamily="monospace">N 0°</text>
+                <text x="171" y="93" textAnchor="middle" fill="#64748b" fontSize="8" fontFamily="monospace">E</text>
+                <text x="90" y="177" textAnchor="middle" fill="#64748b" fontSize="8" fontFamily="monospace">S</text>
+                <text x="8" y="93" textAnchor="middle" fill="#64748b" fontSize="8" fontFamily="monospace">W</text>
+                {(() => {
+                  const pts = trajectoryPlan.waypoints.map((w) => {
+                    const r = ((90 - w.elevationDeg) / 90) * 76;
+                    const rad = (w.azimuthDeg * Math.PI) / 180;
+                    return {
+                      x: 90 + r * Math.sin(rad),
+                      y: 90 - r * Math.cos(rad),
+                      w,
+                    };
+                  });
+                  const pathD = pts
+                    .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+                    .join(' ');
+                  const activePt = pts[safeWaypointIdx];
+                  return (
+                    <>
+                      <path d={pathD} fill="none" stroke="#38bdf8" strokeWidth="1.8" />
+                      {pts.map((p) => (
+                        <circle
+                          key={p.w.index}
+                          cx={p.x}
+                          cy={p.y}
+                          r={p.w.index === safeWaypointIdx ? 4 : 2}
+                          fill={p.w.index === safeWaypointIdx ? '#f59e0b' : '#38bdf8'}
+                          className="cursor-pointer"
+                          onClick={() => setWaypointIdx(p.w.index)}
+                        />
+                      ))}
+                      {activePt && (
+                        <line
+                          x1="90"
+                          y1="90"
+                          x2={activePt.x}
+                          y2={activePt.y}
+                          stroke="#f59e0b"
+                          strokeOpacity="0.65"
+                          strokeDasharray="2 2"
+                        />
+                      )}
+                    </>
+                  );
+                })()}
+              </svg>
+
+              {activeWaypoint && (
+                <div className="flex-1 w-full space-y-2 text-[11px] font-mono text-slate-200">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Точка #{activeWaypoint.index + 1}/{trajectoryPlan.waypoints.length}</span>
+                    <span>T+{activeWaypoint.tSec}с</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[10px] text-slate-400">Азимут / Место</div>
+                      <div className="text-sky-300 font-semibold tabular-nums">
+                        {activeWaypoint.azimuthDeg}° / {activeWaypoint.elevationDeg}°
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-400">SCARA IK (θ1, θ2)</div>
+                      <div className="text-amber-300 font-semibold tabular-nums">
+                        {activeWaypoint.scaraTheta1Deg}° / {activeWaypoint.scaraTheta2Deg}°
+                      </div>
+                    </div>
+                  </div>
+                  <div className="px-2 py-1 bg-slate-900 border border-slate-800 rounded text-emerald-400">
+                    {activeWaypoint.gcode}
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, trajectoryPlan.waypoints.length - 1)}
+                    value={safeWaypointIdx}
+                    onChange={(e) => setWaypointIdx(Number(e.target.value))}
+                    aria-label="Шаг траектории наведения"
+                    className="w-full accent-sky-500"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

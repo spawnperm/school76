@@ -122,6 +122,33 @@ export function registerCubeSatBlocks() {
       colour: '#4C97FF',
       tooltip: 'Возвращает строковое имя активного режима кубсата',
     },
+    {
+      type: 'obc_set_status_led',
+      message0: 'индикатор RGB LED R %1 G %2 B %3',
+      args0: [
+        { type: 'input_value', name: 'R', check: 'Number' },
+        { type: 'input_value', name: 'G', check: 'Number' },
+        { type: 'input_value', name: 'B', check: 'Number' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#4C97FF',
+      tooltip: 'Зажигает RGB-индикатор статуса на стенде (MeRGBLed / Codey LED)',
+    },
+    {
+      type: 'obc_play_buzzer',
+      message0: 'сигнал зуммера %1 Гц длит. %2 мс',
+      args0: [
+        { type: 'input_value', name: 'FREQ', check: 'Number' },
+        { type: 'input_value', name: 'MS', check: 'Number' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#4C97FF',
+      tooltip: 'Подаёт звуковой диагностический сигнал (MeBuzzer / Codey speaker)',
+    },
 
     // 3. EPS · Система энергопитания (Orange #FF8C1A)
     {
@@ -262,6 +289,55 @@ export function registerCubeSatBlocks() {
       colour: '#9966FF',
       tooltip: 'Вычисляет и подаёт токи на катушки для гашения угловой скорости',
     },
+    {
+      type: 'adcs_read_angle',
+      message0: 'угол ориентации (MeGyro) ось %1 (°)',
+      args0: [
+        {
+          type: 'field_dropdown',
+          name: 'AXIS',
+          options: [
+            ['X (Pitch)', 'X'],
+            ['Y (Roll)', 'Y'],
+            ['Z (Yaw)', 'Z'],
+          ],
+        },
+      ],
+      output: 'Number',
+      colour: '#9966FF',
+      tooltip: 'Угол ориентации (°) из комплементарного фильтра MeGyro (tau = 0.5 с)',
+    },
+    {
+      type: 'adcs_calibrate_gyro',
+      message0: 'калибровка IMU (500 отсчётов MeGyro)',
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#9966FF',
+      tooltip: 'Снимает 500 отсчётов смещения нуля гироскопа перед работой ADCS',
+    },
+    {
+      type: 'adcs_pid_stabilize',
+      message0: 'ПИД-стабилизация ось %1 цель %2° Kp %3 Kd %4',
+      args0: [
+        {
+          type: 'field_dropdown',
+          name: 'AXIS',
+          options: [
+            ['X', 'X'],
+            ['Y', 'Y'],
+            ['Z', 'Z'],
+          ],
+        },
+        { type: 'input_value', name: 'TARGET', check: 'Number' },
+        { type: 'input_value', name: 'KP', check: 'Number' },
+        { type: 'input_value', name: 'KD', check: 'Number' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#9966FF',
+      tooltip: 'ПИД-контур ориентации к целевому углу с зоной нечувствительности ±0.5° (MeEncoder/ADCS)',
+    },
 
     // 5. COMMS · Радиосвязь (Teal #0FBD8C)
     {
@@ -312,6 +388,14 @@ export function registerCubeSatBlocks() {
       nextStatement: null,
       colour: '#0FBD8C',
       tooltip: 'Устанавливает выходную мощность UHF-усилителя',
+    },
+    {
+      type: 'comms_send_makeblock_frame',
+      message0: 'передать бинарный кадр 0xFF 0x55 (MeHostParser)',
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#0FBD8C',
+      tooltip: 'Отправляет по UART бинарный пакет Makeblock 0xFF 0x55 с float32 телеметрией',
     },
 
     // 6. PAYLOAD · Полезная нагрузка (Rose #FF6680)
@@ -396,6 +480,23 @@ export const CUBESAT_TOOLBOX = {
         },
         { kind: 'block', type: 'obc_reset_watchdog' },
         { kind: 'block', type: 'obc_get_mode' },
+        {
+          kind: 'block',
+          type: 'obc_set_status_led',
+          inputs: {
+            R: { shadow: { type: 'math_number', fields: { NUM: 0 } } },
+            G: { shadow: { type: 'math_number', fields: { NUM: 180 } } },
+            B: { shadow: { type: 'math_number', fields: { NUM: 255 } } },
+          },
+        },
+        {
+          kind: 'block',
+          type: 'obc_play_buzzer',
+          inputs: {
+            FREQ: { shadow: { type: 'math_number', fields: { NUM: 880 } } },
+            MS: { shadow: { type: 'math_number', fields: { NUM: 150 } } },
+          },
+        },
       ],
     },
     {
@@ -416,7 +517,18 @@ export const CUBESAT_TOOLBOX = {
       colour: '#9966FF',
       contents: [
         { kind: 'block', type: 'adcs_read_gyro' },
+        { kind: 'block', type: 'adcs_read_angle' },
         { kind: 'block', type: 'adcs_read_sun_sensor' },
+        { kind: 'block', type: 'adcs_calibrate_gyro' },
+        {
+          kind: 'block',
+          type: 'adcs_pid_stabilize',
+          inputs: {
+            TARGET: { shadow: { type: 'math_number', fields: { NUM: 0 } } },
+            KP: { shadow: { type: 'math_number', fields: { NUM: 2.5 } } },
+            KD: { shadow: { type: 'math_number', fields: { NUM: 0.6 } } },
+          },
+        },
         {
           kind: 'block',
           type: 'adcs_set_magnetorquer',
@@ -440,6 +552,7 @@ export const CUBESAT_TOOLBOX = {
           },
         },
         { kind: 'block', type: 'comms_send_telemetry' },
+        { kind: 'block', type: 'comms_send_makeblock_frame' },
         { kind: 'block', type: 'comms_set_tx_power' },
       ],
     },

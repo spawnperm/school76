@@ -35,6 +35,7 @@ import { HardwareBench } from './HardwareBench.tsx';
 import { CubeSat3DViewer } from './CubeSat3DViewer.tsx';
 import { ProjectsDashboard } from './ProjectsDashboard.tsx';
 import { CiActionsPanel } from './CiActionsPanel.tsx';
+import { SubsystemArchitectureGraph } from './SubsystemArchitectureGraph.tsx';
 
 function isSafeImageSrc(src: string): boolean {
   return src.startsWith('/api/s3/') || src.startsWith('https://');
@@ -974,6 +975,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         descriptionError={descriptionError}
         onGenerateReadme={handleGenerateReadme}
         onUploadReadme={handleUploadReadme}
+      />
+
+      {/* Interactive D3.js CubeSat Subsystem Architecture & Dependencies */}
+      <SubsystemArchitectureGraph
+        projectName={activeProject.name}
+        tasks={projectTasks}
+        programs={programs}
+        onOpenSubsystemTasks={onOpenSubsystemTasks}
+        onOpenSubsystemMBlock={onOpenSubsystemMBlock}
       />
 
       {/* CI/CD Actions Panel (GitHub Actions + Team Projects Forgejo Actions) */}

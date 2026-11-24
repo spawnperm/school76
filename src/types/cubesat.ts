@@ -99,6 +99,15 @@ export interface UserProfile {
   createdAt: string;
 }
 
+export type MissionLifecycleStage = 'design' | 'assembly' | 'testing' | 'launch';
+
+export const MISSION_STAGE_LABELS: Record<MissionLifecycleStage, string> = {
+  design: 'Проектирование',
+  assembly: 'Сборка',
+  testing: 'Тестирование',
+  launch: 'Запуск',
+};
+
 export interface CommunityProject {
   id: string;
   slug: string;
@@ -110,6 +119,7 @@ export interface CommunityProject {
   memberIds: string[];
   forgejoRepo: string;
   githubRepo?: string;
+  lifecycleStage?: MissionLifecycleStage;
   s3Bucket: string;
   createdAt: string;
 }
@@ -194,6 +204,50 @@ export interface CiWorkflowRun {
   canRerun: boolean;
   steps?: CiJobStep[];
   errorSummary?: string;
+}
+
+export interface GitHubJobStepSummary {
+  number: number;
+  name: string;
+  status: CiRunStatus;
+  conclusion: CiRunConclusion;
+  durationSec?: number;
+}
+
+export interface GitHubJobLogSummary {
+  id: string;
+  name: string;
+  status: CiRunStatus;
+  conclusion: CiRunConclusion;
+  durationSec?: number;
+  htmlUrl?: string;
+  steps: GitHubJobStepSummary[];
+  logLines: string[];
+  totalLogLines: number;
+  logNotice?: string;
+}
+
+export interface GitHubRunLogsResponse {
+  repo: string;
+  runId: string;
+  jobs: GitHubJobLogSummary[];
+  condensedSummary: string;
+}
+
+export interface GitHubWorkflowDescriptor {
+  id: string;
+  name: string;
+  path: string;
+  state: string;
+  htmlUrl?: string;
+  isUnitTestCandidate: boolean;
+}
+
+export interface GitHubRunStatusSnapshot {
+  repo: string;
+  run: CiWorkflowRun;
+  jobs: GitHubJobLogSummary[];
+  condensedSummary: string;
 }
 
 export interface GarageObjectMeta {

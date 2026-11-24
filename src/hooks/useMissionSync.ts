@@ -4,6 +4,7 @@ import type {
   CommunityProject,
   CubeSatTask,
   ForgejoCommit,
+  MissionLifecycleStage,
   MissionSnapshot,
   OnboardProgram,
   SocialPost,
@@ -213,7 +214,11 @@ export function useMissionSync(activeTab: string) {
       const res = await fetch(url, { ...options, headers });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(typeof data.error === 'string' ? data.error : 'Ошибка запроса');
+        const err = new Error(
+          typeof data.error === 'string' ? data.error : 'Ошибка запроса'
+        ) as Error & { data?: Record<string, unknown> };
+        err.data = data;
+        throw err;
       }
       return data;
     },
@@ -302,6 +307,25 @@ export function useMissionSync(activeTab: string) {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      return data.project as CommunityProject;
+    },
+    [authFetch]
+  );
+
+  const updateProject = useCallback(
+    async (
+      projectId: string,
+      patch: { githubRepo?: string; lifecycleStage?: MissionLifecycleStage | null }
+    ) => {
+      const data = await authFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      if (data.project) {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === data.project.id ? data.project : p))
+        );
+      }
       return data.project as CommunityProject;
     },
     [authFetch]
@@ -479,6 +503,7 @@ export function useMissionSync(activeTab: string) {
     updateMyProfile,
     toggleFollow,
     createProject,
+    updateProject,
     toggleJoinProject,
     generateProjectDescription,
     generateProjectReadme,

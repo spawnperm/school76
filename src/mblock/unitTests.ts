@@ -3,7 +3,9 @@ import {
   bindCompiledHandlers,
   createInitialTelemetry,
   createSimRuntime,
+  stepCubeSatPhysics,
   type CubeSatTelemetry,
+  type FaultInjectionState,
   type ObcMode,
 } from './simulator.ts';
 
@@ -29,7 +31,14 @@ export type AssertionOperator =
   | 'omega_lt'
   | 'omega_decreased'
   | 'mtq_x_eq'
+  | 'tx_power_eq'
+  | 'battery_gte'
+  | 'battery_lte'
+  | 'calibrated_eq'
+  | 'angle_abs_lt'
+  | 'frames_gte'
   | 'method_called'
+  | 'method_not_called'
   | 'log_contains';
 
 export interface UnitAssertionSpec {
@@ -45,20 +54,25 @@ export interface UnitTestCase {
   name: string;
   subsystem: Exclude<Subsystem, 'GROUND'>;
   description: string;
+  expectedBehavior?: string;
   enabled: boolean;
   isCustom?: boolean;
   trigger: UnitTestTrigger;
   tickCount: number;
+  simulatePhysics?: boolean;
   mockInput: {
     mode: ObcMode;
     batteryPct: number;
     inEclipse: boolean;
+    batTempC?: number;
+    heaterOn?: boolean;
     gyro: { X: number; Y: number; Z: number };
     rails: {
       COMMS_3V3: boolean;
       ADCS_5V: boolean;
       PAYLOAD_5V: boolean;
     };
+    faults?: Partial<FaultInjectionState>;
   };
   assertions: UnitAssertionSpec[];
 }
@@ -89,6 +103,7 @@ export interface UnitTestRunResult {
   durationMs: number;
   assertionResults: AssertionResult[];
   spyTrace: SpyCallEntry[];
+  initialState: CubeSatTelemetry;
   finalState: CubeSatTelemetry;
 }
 
@@ -143,17 +158,23 @@ const BLOCK_TO_SIM_METHOD: Record<string, string> = {
   obc_log_telemetry: 'logTelemetry',
   obc_reset_watchdog: 'resetWatchdog',
   obc_get_mode: 'getMode',
+  obc_set_status_led: 'setLed',
+  obc_play_buzzer: 'playBuzzer',
   eps_read_battery_pct: 'batteryPct',
   eps_read_battery_volt: 'batteryVolt',
   eps_read_solar_ma: 'solarCurrent',
   eps_set_rail: 'setRail',
   eps_set_heater: 'setHeater',
   adcs_read_gyro: 'gyro',
+  adcs_read_angle: 'angle',
+  adcs_calibrate_gyro: 'calibrateGyro',
+  adcs_pid_stabilize: 'pidStabilize',
   adcs_read_sun_sensor: 'sunFlux',
   adcs_set_magnetorquer: 'setMagnetorquer',
   adcs_run_bdot: 'runBdot',
   comms_send_beacon: 'sendBeacon',
   comms_send_telemetry: 'sendTelemetry',
+  comms_send_makeblock_frame: 'sendMakeblockFrame',
   comms_set_tx_power: 'setTxPower',
   payload_capture_image: 'captureImage',
   payload_read_radiation: 'readRadiation',
@@ -316,7 +337,11 @@ export function buildPresetUnitTests(
   const hasBoot = used.has('sat_event_boot');
   const hasTick = used.has('sat_event_loop_tick');
   const hasBdot = used.has('adcs_run_bdot') || used.has('adcs_read_gyro');
+  const hasPid = used.has('adcs_pid_stabilize') || used.has('adcs_read_angle');
+  const hasGyroCal = used.has('adcs_calibrate_gyro');
+  const hasMbFrame = used.has('comms_send_makeblock_frame');
   const hasBatCheck = used.has('eps_read_battery_pct');
+  const hasHeaterCheck = used.has('eps_set_heater') || used.has('payload_read_temp');
   const hasComms = used.has('comms_send_beacon') || used.has('comms_send_telemetry');
   const hasCapture = used.has('sat_event_telecommand') && used.has('payload_capture_image');
 
@@ -326,6 +351,8 @@ export function buildPresetUnitTests(
       name: 'Инициализация OBC при старте (Boot)',
       subsystem: 'OBC',
       description: 'Проверяет, что блок запуска устанавливает рабочий режим OBC и не вызывает сбоев.',
+      expectedBehavior:
+        'Дано: OBC запускается в режиме SAFE. Когда выполняется onBoot, контроллер переводит аппарат в рабочий режим и вызывает setMode().',
       enabled: hasBoot,
       trigger: 'onBoot',
       tickCount: 1,
@@ -333,6 +360,7 @@ export function buildPresetUnitTests(
         mode: 'SAFE',
         batteryPct: 78,
         inEclipse: false,
+        batTempC: 16.5,
         gyro: { X: 1.2, Y: -0.5, Z: 0.3 },
         rails: { COMMS_3V3: false, ADCS_5V: false, PAYLOAD_5V: false },
       },
@@ -356,6 +384,8 @@ export function buildPresetUnitTests(
       name: 'Поддержание сторожевого таймера WDT',
       subsystem: 'OBC',
       description: 'Проверяет сброс аппаратного WDT в основном цикле телеметрии.',
+      expectedBehavior:
+        'Дано: штатный орбитальный цикл. За 2 тика программа обязана минимум 1 раз сбросить сторожевой таймер WDT.',
       enabled: hasTick && used.has('obc_reset_watchdog'),
       trigger: 'tick',
       tickCount: 2,
@@ -363,6 +393,7 @@ export function buildPresetUnitTests(
         mode: 'NOMINAL',
         batteryPct: 72,
         inEclipse: false,
+        batTempC: 18.0,
         gyro: { X: 1, Y: 0, Z: 0 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
       },
@@ -381,6 +412,8 @@ export function buildPresetUnitTests(
       subsystem: 'EPS',
       description:
         'При падении заряда ниже 25% логика должна перейти в SAFE и отключить нагрузку PAYLOAD_5V.',
+      expectedBehavior:
+        'Дано: спутник в тени Земли, АКБ = 18%, шина PAYLOAD_5V включена. Алгоритм должен перевести OBC в SAFE и обесточить PAYLOAD_5V.',
       enabled: hasTick && hasBatCheck,
       trigger: 'boot_then_tick',
       tickCount: 2,
@@ -388,6 +421,7 @@ export function buildPresetUnitTests(
         mode: 'NOMINAL',
         batteryPct: 18,
         inEclipse: true,
+        batTempC: 6.0,
         gyro: { X: 1.1, Y: -0.4, Z: 0.2 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: true },
       },
@@ -408,10 +442,40 @@ export function buildPresetUnitTests(
       ],
     },
     {
+      id: 'ut-eps-cold-heater',
+      name: 'Терморегуляция АКБ при охлаждении в тени (2°C)',
+      subsystem: 'EPS',
+      description: 'Проверяет включение обогревателя батареи при падении температуры ниже 5°C.',
+      expectedBehavior:
+        'Дано: Тень Земли, температура АКБ 2.0°C, обогрев выключен. Когда выполняется цикл телеметрии, EPS включает термоподогрев.',
+      enabled: hasTick && hasHeaterCheck,
+      trigger: 'boot_then_tick',
+      tickCount: 1,
+      mockInput: {
+        mode: 'NOMINAL',
+        batteryPct: 64,
+        inEclipse: true,
+        batTempC: 2.0,
+        heaterOn: false,
+        gyro: { X: 0.6, Y: -0.3, Z: 0.2 },
+        rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
+      },
+      assertions: [
+        {
+          id: 'a-heater-on',
+          label: 'Обогрев АКБ включён (heater = ON)',
+          op: 'heater_eq',
+          expected: true,
+        },
+      ],
+    },
+    {
       id: 'ut-comms-nominal-tx',
       name: 'Штатная передача телеметрии и маяка (82% АКБ)',
       subsystem: 'COMMS',
       description: 'На солнечном участке при 82% АКБ должен отправляться кадр телеметрии или маяк AX.25.',
+      expectedBehavior:
+        'Дано: солнечный участок, АКБ 82%, COMMS_3V3 включена. За 1 тик цикла отправляются пакет TLM и маяк AX.25.',
       enabled: hasTick && hasComms,
       trigger: 'boot_then_tick',
       tickCount: 1,
@@ -419,6 +483,7 @@ export function buildPresetUnitTests(
         mode: 'NOMINAL',
         batteryPct: 82,
         inEclipse: false,
+        batTempC: 22.0,
         gyro: { X: 0.8, Y: 0.3, Z: -0.2 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
       },
@@ -442,6 +507,8 @@ export function buildPresetUnitTests(
       name: 'Гашение закрутки алгоритмом B-dot (18 °/с)',
       subsystem: 'ADCS',
       description: 'При угловой скорости 18 °/с логика должна запускать B-dot и снижать |ω|.',
+      expectedBehavior:
+        'Дано: высокая закрутка ω=(18, -10, 6) °/с и режим DETUMBLE. За 3 тика вызывается B-dot и |ω| снижается.',
       enabled: hasTick && hasBdot,
       trigger: 'boot_then_tick',
       tickCount: 3,
@@ -449,6 +516,7 @@ export function buildPresetUnitTests(
         mode: 'DETUMBLE',
         batteryPct: 68,
         inEclipse: false,
+        batTempC: 19.0,
         gyro: { X: 18, Y: -10, Z: 6 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
       },
@@ -472,6 +540,8 @@ export function buildPresetUnitTests(
       name: 'Выход в NOMINAL после стабилизации (< 1 °/с)',
       subsystem: 'ADCS',
       description: 'Когда |ω| ниже порога, катушки выключаются и OBC переходит в NOMINAL.',
+      expectedBehavior:
+        'Дано: кубсат стабилизирован (|ω| < 0.5 °/с). Алгоритм обнуляет магнитные катушки и переводит режим в NOMINAL.',
       enabled: hasTick && hasBdot,
       trigger: 'boot_then_tick',
       tickCount: 1,
@@ -479,6 +549,7 @@ export function buildPresetUnitTests(
         mode: 'DETUMBLE',
         batteryPct: 75,
         inEclipse: false,
+        batTempC: 18.0,
         gyro: { X: 0.4, Y: 0.2, Z: 0.1 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
       },
@@ -502,6 +573,8 @@ export function buildPresetUnitTests(
       name: 'Команда CAPTURE при полном заряде (80%)',
       subsystem: 'PAYLOAD',
       description: 'При 80% АКБ команда CAPTURE включает шину, делает снимок и отключает камеру.',
+      expectedBehavior:
+        'Дано: АКБ 80%, шина камеры выключена. При получении CAPTURE делается снимок и шина PAYLOAD_5V снова обесточивается.',
       enabled: hasCapture,
       trigger: 'command:CAPTURE',
       tickCount: 1,
@@ -509,6 +582,7 @@ export function buildPresetUnitTests(
         mode: 'NOMINAL',
         batteryPct: 80,
         inEclipse: false,
+        batTempC: 20.0,
         gyro: { X: 0.5, Y: 0.2, Z: 0.1 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
       },
@@ -533,6 +607,8 @@ export function buildPresetUnitTests(
       name: 'Отказ съёмки CAPTURE при низком заряде (28%)',
       subsystem: 'PAYLOAD',
       description: 'При заряде 28% камера не должна включаться; отправляется отказ на Землю.',
+      expectedBehavior:
+        'Дано: АКБ 28%. При команде CAPTURE съёмка блокируется (captureImage не вызывается), PAYLOAD_5V остаётся выключенной, уходит маяк отказа.',
       enabled: hasCapture,
       trigger: 'command:CAPTURE',
       tickCount: 1,
@@ -540,6 +616,7 @@ export function buildPresetUnitTests(
         mode: 'NOMINAL',
         batteryPct: 28,
         inEclipse: false,
+        batTempC: 15.0,
         gyro: { X: 0.5, Y: 0.2, Z: 0.1 },
         rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
       },
@@ -549,6 +626,12 @@ export function buildPresetUnitTests(
           label: 'Снимок не выполнен (0 кадров)',
           op: 'images_gte',
           expected: 0,
+        },
+        {
+          id: 'a-no-capture-fn',
+          label: 'Метод captureImage() не вызывался',
+          op: 'method_not_called',
+          expected: 'captureImage',
         },
         {
           id: 'a-no-capture-call',
@@ -563,6 +646,55 @@ export function buildPresetUnitTests(
           op: 'beacons_gte',
           expected: 1,
         },
+      ],
+    },
+    {
+      id: 'ut-adcs-megyro-pid',
+      name: 'Калибровка MeGyro и ПИД-удержание надира',
+      subsystem: 'ADCS',
+      description:
+        'Проверяет калибровку IMU при старте и сходимость ПИД-стабилизации угла Pitch к 0°.',
+      expectedBehavior:
+        'Дано: отклонение по тангажу Pitch = 6.2° и некалиброванный IMU. После запуска onBoot + 4 тиков IMU откалиброван, а |Pitch| < 3°.',
+      enabled: hasPid || hasGyroCal,
+      trigger: 'boot_then_tick',
+      tickCount: 4,
+      simulatePhysics: true,
+      mockInput: {
+        mode: 'NOMINAL',
+        batteryPct: 80,
+        inEclipse: false,
+        batTempC: 19.0,
+        gyro: { X: 3.8, Y: -1.2, Z: 0.4 },
+        rails: { COMMS_3V3: true, ADCS_5V: true, PAYLOAD_5V: false },
+      },
+      assertions: [
+        ...(hasGyroCal
+          ? [
+              {
+                id: 'a-gyro-cal',
+                label: 'IMU откалиброван (500 отсчётов MeGyro)',
+                op: 'calibrated_eq' as const,
+                expected: true,
+              },
+            ]
+          : []),
+        {
+          id: 'a-pid-angle',
+          label: 'Отклонение угла Pitch сведено к |θ_X| < 3°',
+          op: 'angle_abs_lt',
+          expected: 3,
+        },
+        ...(hasMbFrame
+          ? [
+              {
+                id: 'a-mb-frame',
+                label: 'Сформирован бинарный кадр Makeblock 0xFF 0x55',
+                op: 'frames_gte' as const,
+                expected: 1,
+              },
+            ]
+          : []),
       ],
     },
   ];
@@ -694,6 +826,67 @@ function evaluateAssertion(
         actualText: `MTQ_X = ${finalState.magnetorquer.X}%`,
       };
     }
+    case 'tx_power_eq': {
+      const exp = Number(spec.expected ?? 20);
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: finalState.txPowerDbm === exp,
+        expectedText: `TX = ${exp} дБм`,
+        actualText: `TX = ${finalState.txPowerDbm} дБм`,
+      };
+    }
+    case 'battery_gte': {
+      const min = Number(spec.expected ?? 50);
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: finalState.batteryPct >= min,
+        expectedText: `АКБ >= ${min}%`,
+        actualText: `АКБ = ${finalState.batteryPct.toFixed(1)}%`,
+      };
+    }
+    case 'battery_lte': {
+      const max = Number(spec.expected ?? 50);
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: finalState.batteryPct <= max,
+        expectedText: `АКБ <= ${max}%`,
+        actualText: `АКБ = ${finalState.batteryPct.toFixed(1)}%`,
+      };
+    }
+    case 'calibrated_eq': {
+      const exp = Boolean(spec.expected);
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: finalState.gyroCalibrated === exp,
+        expectedText: `calibrated = ${exp}`,
+        actualText: `calibrated = ${finalState.gyroCalibrated}`,
+      };
+    }
+    case 'angle_abs_lt': {
+      const lim = Number(spec.expected ?? 5);
+      const val = Math.abs(finalState.angles.X);
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: val < lim,
+        expectedText: `|Pitch| < ${lim}°`,
+        actualText: `|Pitch| = ${val.toFixed(2)}°`,
+      };
+    }
+    case 'frames_gte': {
+      const min = Number(spec.expected ?? 1);
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: finalState.makeblockFramesCount >= min,
+        expectedText: `0xFF55 frames >= ${min}`,
+        actualText: `frames = ${finalState.makeblockFramesCount}`,
+      };
+    }
     case 'method_called': {
       const m = String(spec.expected || '');
       return {
@@ -702,6 +895,16 @@ function evaluateAssertion(
         passed: calledMethods.has(m),
         expectedText: `${m}() вызван`,
         actualText: calledMethods.has(m) ? `${m}() выполнен` : `${m}() не вызывался`,
+      };
+    }
+    case 'method_not_called': {
+      const m = String(spec.expected || '');
+      return {
+        id: spec.id,
+        label: spec.label,
+        passed: !calledMethods.has(m),
+        expectedText: `${m}() не вызван`,
+        actualText: !calledMethods.has(m) ? `${m}() не вызывался` : `${m}() был вызван`,
       };
     }
     case 'log_contains': {
@@ -720,20 +923,72 @@ function evaluateAssertion(
   }
 }
 
+function cloneTelemetry(t: CubeSatTelemetry): CubeSatTelemetry {
+  return {
+    ...t,
+    solarMa: { ...t.solarMa },
+    rails: { ...t.rails },
+    gyro: { ...t.gyro },
+    angles: { ...t.angles },
+    magnetorquer: { ...t.magnetorquer },
+    ledRgb: { ...t.ledRgb },
+    temps: { ...t.temps },
+    subsystemWatts: { ...t.subsystemWatts },
+    faults: { ...t.faults },
+    history: t.history.map((p) => ({ ...p })),
+    makeblockFrames: t.makeblockFrames.map((f) => ({ ...f, bytes: [...f.bytes] })),
+    logs: t.logs.map((l) => ({ ...l })),
+  };
+}
+
+async function runWithTimeout<T>(promise: Promise<T>, ms = 1500): Promise<T> {
+  let timerId: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timerId = window.setTimeout(
+          () => reject(new Error(`Таймаут виртуальной песочницы (${ms} мс): возможен бесконечный цикл`)),
+          ms
+        );
+      }),
+    ]);
+  } finally {
+    if (timerId !== undefined) window.clearTimeout(timerId);
+  }
+}
+
 export async function runSingleUnitTest(
   jsCode: string,
   testCase: UnitTestCase
 ): Promise<{ result: UnitTestRunResult; calledMethods: Set<string> }> {
   const t0 = performance.now();
   let state = createInitialTelemetry('leo_nominal');
+  const batPct = Math.max(0, Math.min(100, Number(testCase.mockInput.batteryPct ?? 75)));
+  const batTemp =
+    typeof testCase.mockInput.batTempC === 'number'
+      ? testCase.mockInput.batTempC
+      : testCase.mockInput.inEclipse
+        ? 4.0
+        : 16.8;
+
   state = {
     ...state,
     mode: testCase.mockInput.mode,
-    batteryPct: testCase.mockInput.batteryPct,
-    batteryVolt: 6.35 + (testCase.mockInput.batteryPct / 100) * 1.95,
+    batteryPct: batPct,
+    batteryVolt: Number((6.35 + (batPct / 100) * 1.95).toFixed(2)),
     inEclipse: testCase.mockInput.inEclipse,
+    heaterOn: Boolean(testCase.mockInput.heaterOn),
     gyro: { ...testCase.mockInput.gyro },
     rails: { ...testCase.mockInput.rails },
+    temps: {
+      ...state.temps,
+      BAT: batTemp,
+    },
+    faults: {
+      ...state.faults,
+      ...(testCase.mockInput.faults || {}),
+    },
     watchdogAgeSec: 4,
     watchdogResets: 0,
     beaconsSent: 0,
@@ -741,6 +996,8 @@ export async function runSingleUnitTest(
     imagesCaptured: 0,
     logs: [],
   };
+
+  const initialState = cloneTelemetry(state);
   const initialOmega = Math.hypot(state.gyro.X, state.gyro.Y, state.gyro.Z);
 
   const { simApi } = createSimRuntime(
@@ -755,6 +1012,8 @@ export async function runSingleUnitTest(
   const spyTrace: SpyCallEntry[] = [];
   const calledMethods = new Set<string>();
   let seq = 0;
+  let totalCalls = 0;
+  const MAX_SANDBOX_CALLS = 5000;
 
   const proxiedSim = new Proxy(simApi, {
     get(target, prop, receiver) {
@@ -762,9 +1021,15 @@ export async function runSingleUnitTest(
       if (typeof orig !== 'function') return orig;
       const name = String(prop);
       return (...args: unknown[]) => {
+        totalCalls++;
+        if (totalCalls > MAX_SANDBOX_CALLS) {
+          throw new Error(
+            `Превышен лимит вызовов виртуальной песочницы (${MAX_SANDBOX_CALLS} вызовов)`
+          );
+        }
         calledMethods.add(name);
         const res = (orig as (...a: unknown[]) => unknown)(...args);
-        if (spyTrace.length < 60) {
+        if (spyTrace.length < 80) {
           const isPromise = res && typeof (res as Promise<unknown>).then === 'function';
           spyTrace.push({
             seq: ++seq,
@@ -781,93 +1046,68 @@ export async function runSingleUnitTest(
   try {
     const handlers = bindCompiledHandlers(jsCode, proxiedSim as typeof simApi);
 
-    if (testCase.trigger === 'onBoot') {
-      if (!handlers.onBoot) {
-        return {
-          result: {
-            testId: testCase.id,
-            name: testCase.name,
-            subsystem: testCase.subsystem,
-            passed: false,
-            skipped: true,
-            skipReason: 'Отсутствует блок события «когда бортовой компьютер OBC запущен»',
-            durationMs: performance.now() - t0,
-            assertionResults: [],
-            spyTrace,
-            finalState: state,
-          },
-          calledMethods,
-        };
-      }
-      await handlers.onBoot();
-    } else if (testCase.trigger === 'tick') {
-      if (handlers.ticks.length === 0) {
-        return {
-          result: {
-            testId: testCase.id,
-            name: testCase.name,
-            subsystem: testCase.subsystem,
-            passed: false,
-            skipped: true,
-            skipReason: 'Отсутствует блок «каждые N сек цикла телеметрии»',
-            durationMs: performance.now() - t0,
-            assertionResults: [],
-            spyTrace,
-            finalState: state,
-          },
-          calledMethods,
-        };
-      }
-      for (let i = 0; i < Math.max(1, testCase.tickCount); i++) {
-        for (const t of handlers.ticks) {
-          await t.fn();
+    const execScenario = async () => {
+      if (testCase.trigger === 'onBoot') {
+        if (!handlers.onBoot) {
+          return 'skip:Отсутствует блок события «когда бортовой компьютер OBC запущен»';
         }
-      }
-    } else if (testCase.trigger === 'boot_then_tick') {
-      if (handlers.ticks.length === 0 && !handlers.onBoot) {
-        return {
-          result: {
-            testId: testCase.id,
-            name: testCase.name,
-            subsystem: testCase.subsystem,
-            passed: false,
-            skipped: true,
-            skipReason: 'Нет обработчиков запуска или периодического цикла',
-            durationMs: performance.now() - t0,
-            assertionResults: [],
-            spyTrace,
-            finalState: state,
-          },
-          calledMethods,
-        };
-      }
-      if (handlers.onBoot) await handlers.onBoot();
-      for (let i = 0; i < Math.max(1, testCase.tickCount); i++) {
-        for (const t of handlers.ticks) {
-          await t.fn();
+        await handlers.onBoot();
+      } else if (testCase.trigger === 'tick') {
+        if (handlers.ticks.length === 0) {
+          return 'skip:Отсутствует блок «каждые N сек цикла телеметрии»';
         }
+        const ticks = Math.max(1, Math.min(50, testCase.tickCount));
+        for (let i = 0; i < ticks; i++) {
+          if (testCase.simulatePhysics) {
+            state = stepCubeSatPhysics(state, 1);
+          }
+          for (const t of handlers.ticks) {
+            await t.fn();
+          }
+        }
+      } else if (testCase.trigger === 'boot_then_tick') {
+        if (handlers.ticks.length === 0 && !handlers.onBoot) {
+          return 'skip:Нет обработчиков запуска или периодического цикла';
+        }
+        if (handlers.onBoot) await handlers.onBoot();
+        const ticks = Math.max(1, Math.min(50, testCase.tickCount));
+        for (let i = 0; i < ticks; i++) {
+          if (testCase.simulatePhysics) {
+            state = stepCubeSatPhysics(state, 1);
+          }
+          for (const t of handlers.ticks) {
+            await t.fn();
+          }
+        }
+      } else if (testCase.trigger.startsWith('command:')) {
+        const cmd = testCase.trigger.slice('command:'.length);
+        const fn = handlers.commands[cmd];
+        if (!fn) {
+          return `skip:В программе не определён обработчик радиокоманды ${cmd}`;
+        }
+        await fn();
       }
-    } else if (testCase.trigger.startsWith('command:')) {
-      const cmd = testCase.trigger.slice('command:'.length);
-      const fn = handlers.commands[cmd];
-      if (!fn) {
-        return {
-          result: {
-            testId: testCase.id,
-            name: testCase.name,
-            subsystem: testCase.subsystem,
-            passed: false,
-            skipped: true,
-            skipReason: `В программе не определён обработчик радиокоманды ${cmd}`,
-            durationMs: performance.now() - t0,
-            assertionResults: [],
-            spyTrace,
-            finalState: state,
-          },
-          calledMethods,
-        };
-      }
-      await fn();
+      return 'ok';
+    };
+
+    const outcome = await runWithTimeout(execScenario(), 1500);
+    if (outcome.startsWith('skip:')) {
+      return {
+        result: {
+          testId: testCase.id,
+          name: testCase.name,
+          subsystem: testCase.subsystem,
+          passed: false,
+          skipped: true,
+          skipReason: outcome.slice(5),
+          durationMs: performance.now() - t0,
+          assertionResults: [],
+          spyTrace,
+          initialState,
+          finalState: state,
+        },
+        calledMethods,
+      };
     }
 
     const assertionResults = testCase.assertions.map((a) =>
@@ -884,6 +1124,7 @@ export async function runSingleUnitTest(
         durationMs: performance.now() - t0,
         assertionResults,
         spyTrace,
+        initialState,
         finalState: state,
       },
       calledMethods,
@@ -899,6 +1140,7 @@ export async function runSingleUnitTest(
         durationMs: performance.now() - t0,
         assertionResults: [],
         spyTrace,
+        initialState,
         finalState: state,
       },
       calledMethods,

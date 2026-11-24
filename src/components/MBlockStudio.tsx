@@ -43,6 +43,13 @@ import {
   type UnitTestCase,
   type UnitTestSuiteReport,
 } from '../mblock/unitTests.ts';
+import {
+  MAKEBLOCK_BOARD_PROFILES,
+  buildCubeSatTelemetryFrames,
+  generateCubeSatS2eExtension,
+  generateSchool76CubeSatHeader,
+  type MakeblockBoardProfileId,
+} from '../mblock/makeblockHardware.ts';
 import { OnboardSimulatorModule } from './OnboardSimulatorModule.tsx';
 import { MBlockUnitTestPanel } from './MBlockUnitTestPanel.tsx';
 
@@ -75,13 +82,18 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     programs.find((p) => p.id === selectedProgramId) || programs[0];
 
   const [panelMode, setPanelMode] = useState<'tests' | 'live' | 'code' | 'history'>('live');
-  const [codeLang, setCodeLang] = useState<'python' | 'cpp'>('python');
+  const [codeLang, setCodeLang] = useState<'python' | 'codey' | 'cpp' | 'bundle'>('python');
+  const [boardProfile, setBoardProfile] = useState<MakeblockBoardProfileId>('auriga_stm32');
+  const [bundleFile, setBundleFile] = useState<'s2e' | 'header'>('s2e');
   const [pythonCode, setPythonCode] = useState(activeProgram?.pythonCode || '');
+  const [codeyCode, setCodeyCode] = useState('');
   const [cppCode, setCppCode] = useState(activeProgram?.cppCode || '');
   const [jsCode, setJsCode] = useState('');
   const [liveWorkspaceJson, setLiveWorkspaceJson] = useState<Record<string, unknown>>(
     () => activeProgram?.workspaceJson || {}
   );
+  const boardProfileRef = useRef<MakeblockBoardProfileId>(boardProfile);
+  boardProfileRef.current = boardProfile;
   const [copied, setCopied] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [newVersionNote, setNewVersionNote] = useState('');
@@ -104,10 +116,42 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const [preflightReport, setPreflightReport] = useState<PreflightReport | null>(null);
   const [runningPreflight, setRunningPreflight] = useState(false);
 
-  // Visual Block Unit Testing state (per program)
-  const [unitTestsByProgram, setUnitTestsByProgram] = useState<Record<string, UnitTestCase[]>>({});
+  // Visual Block Unit Testing state (per program, persisted locally per project)
+  const unitTestsStorageKey = `school76_mblock_unit_tests_v1_${projectId}`;
+  const loadedUnitTestsKeyRef = useRef<string>(unitTestsStorageKey);
+  const [unitTestsByProgram, setUnitTestsByProgram] = useState<Record<string, UnitTestCase[]>>(() => {
+    try {
+      const raw = window.localStorage.getItem(unitTestsStorageKey);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, UnitTestCase[]>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [unitReportByProgram, setUnitReportByProgram] = useState<Record<string, UnitTestSuiteReport>>({});
   const [runningUnitTests, setRunningUnitTests] = useState(false);
+
+  useEffect(() => {
+    if (loadedUnitTestsKeyRef.current !== unitTestsStorageKey) {
+      loadedUnitTestsKeyRef.current = unitTestsStorageKey;
+      try {
+        const raw = window.localStorage.getItem(unitTestsStorageKey);
+        const parsed = raw ? JSON.parse(raw) : {};
+        setUnitTestsByProgram(
+          parsed && typeof parsed === 'object' ? (parsed as Record<string, UnitTestCase[]>) : {}
+        );
+      } catch {
+        setUnitTestsByProgram({});
+      }
+      return;
+    }
+    try {
+      window.localStorage.setItem(unitTestsStorageKey, JSON.stringify(unitTestsByProgram));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [unitTestsByProgram, unitTestsStorageKey]);
 
   const blocklyHostRef = useRef<HTMLDivElement | null>(null);
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null);
@@ -161,8 +205,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
 
     const updateCode = () => {
       if (suppressChangeRef.current) return;
-      const { pythonCode: py, cppCode: cpp, jsCode: js } = generateCubeSatCode(workspace);
+      const { pythonCode: py, codeyCode: codey, cppCode: cpp, jsCode: js } =
+        generateCubeSatCode(workspace, boardProfileRef.current);
       setPythonCode(py);
+      setCodeyCode(codey);
       setCppCode(cpp);
       setJsCode(js);
       setLiveWorkspaceJson(Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>);
@@ -202,12 +248,26 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
       suppressChangeRef.current = false;
     }
 
-    const { pythonCode: py, cppCode: cpp, jsCode: js } = generateCubeSatCode(workspace);
+    const { pythonCode: py, codeyCode: codey, cppCode: cpp, jsCode: js } =
+      generateCubeSatCode(workspace, boardProfileRef.current);
     setPythonCode(py);
+    setCodeyCode(codey);
     setCppCode(cpp);
     setJsCode(js);
     setLiveWorkspaceJson(Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>);
   }, [activeProgram]);
+
+  // Regenerate C++ code when hardware board profile toggles (Auriga/STM32 vs e-Gizmo gizDuino AVR)
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const { pythonCode: py, codeyCode: codey, cppCode: cpp, jsCode: js } =
+      generateCubeSatCode(workspace, boardProfile);
+    setPythonCode(py);
+    setCodeyCode(codey);
+    setCppCode(cpp);
+    setJsCode(js);
+  }, [boardProfile]);
 
   // Stop simulation cleanly
   const stopSimulation = useCallback(() => {
@@ -476,6 +536,12 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     void handleRunAllUnitTests(updated);
   };
 
+  const handleUpdateUnitTest = (updatedCase: UnitTestCase) => {
+    const updated = activeUnitTests.map((t) => (t.id === updatedCase.id ? updatedCase : t));
+    setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: updated }));
+    void handleRunAllUnitTests(updated);
+  };
+
   const handleDeleteUnitTest = (testId: string) => {
     const updated = activeUnitTests.filter((t) => t.id !== testId);
     setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: updated }));
@@ -484,7 +550,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const handleResetUnitTests = () => {
     const { latestJson } = getLatestCodeAndJson();
     const fresh = buildPresetUnitTests(latestJson);
-    setUnitTestsByProgram((prev) => ({ ...prev, [activeProgId]: fresh }));
+    setUnitTestsByProgram((prev) => {
+      const next = { ...prev, [activeProgId]: fresh };
+      return next;
+    });
     setUnitReportByProgram((prev) => {
       const copy = { ...prev };
       delete copy[activeProgId];
@@ -534,11 +603,32 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     }
   };
 
+  const handleCaptureMakeblockFrame = useCallback(() => {
+    setTelemetry((prev) => {
+      const frames = buildCubeSatTelemetryFrames(prev);
+      const stamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+      return {
+        ...prev,
+        makeblockFramesCount: prev.makeblockFramesCount + frames.length,
+        makeblockFrames: [...frames, ...prev.makeblockFrames].slice(0, 32),
+        logs: [
+          {
+            id: `${Date.now()}-ff55`,
+            time: stamp,
+            source: 'COMMS' as const,
+            text: `Снимок протокола 0xFF 0x55: передано ${frames.length} пакета (V_BAT, ω_X, Pitch, T_BAT)`,
+          },
+          ...prev.logs,
+        ].slice(0, 80),
+      };
+    });
+  }, []);
+
   const handleSaveCurrent = (customNote?: string) => {
     const workspace = workspaceRef.current;
     if (!workspace || !activeProgram) return;
     const workspaceJson = Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>;
-    const { pythonCode: py, cppCode: cpp } = generateCubeSatCode(workspace);
+    const { pythonCode: py, cppCode: cpp } = generateCubeSatCode(workspace, boardProfile);
     onSaveProgram({
       id: activeProgram.id,
       projectId: activeProgram.projectId || projectId,
@@ -569,8 +659,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     } finally {
       suppressChangeRef.current = false;
     }
-    const { pythonCode: py, cppCode: cpp, jsCode: js } = generateCubeSatCode(workspace);
+    const { pythonCode: py, codeyCode: codey, cppCode: cpp, jsCode: js } =
+      generateCubeSatCode(workspace, boardProfile);
     setPythonCode(py);
+    setCodeyCode(codey);
     setCppCode(cpp);
     setJsCode(js);
   };
@@ -619,7 +711,22 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     setShowCreateModal(false);
   };
 
-  const displayedCode = codeLang === 'python' ? pythonCode : cppCode;
+  const s2eExtensionText = React.useMemo(() => generateCubeSatS2eExtension(), []);
+  const headerLibraryText = React.useMemo(
+    () => generateSchool76CubeSatHeader(boardProfile),
+    [boardProfile]
+  );
+
+  const displayedCode =
+    codeLang === 'python'
+      ? pythonCode
+      : codeLang === 'codey'
+        ? codeyCode
+        : codeLang === 'cpp'
+          ? cppCode
+          : bundleFile === 's2e'
+            ? s2eExtensionText
+            : headerLibraryText;
 
   const handleCopyCode = () => {
     navigator.clipboard?.writeText(displayedCode);
@@ -628,12 +735,22 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   };
 
   const handleDownloadCode = () => {
-    const ext = codeLang === 'python' ? 'py' : 'ino';
+    const baseName = activeProgram?.id || 'school76_obc';
+    const filename =
+      codeLang === 'python'
+        ? `${baseName}.py`
+        : codeLang === 'codey'
+          ? `${baseName}_codey.py`
+          : codeLang === 'cpp'
+            ? `${baseName}.ino`
+            : bundleFile === 's2e'
+              ? 'school76_cubesat.s2e'
+              : 'School76CubeSat.h';
     const blob = new Blob([displayedCode], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${activeProgram?.id || 'school76_obc'}.${ext}`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -706,7 +823,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               }`}
             >
               <FlaskConical className="w-3.5 h-3.5 text-sky-600" />
-              Юнит-тесты
+              Модульные тесты
               {activeUnitReport && (
                 <span
                   className={`font-mono text-[10px] font-bold tabular-nums ${
@@ -781,7 +898,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
         </div>
 
         {/* Right: Unit Tests OR Live 1U CubeSat Bench OR Python/C++ Code Panel */}
-        <aside className="w-full lg:w-[460px] xl:w-[490px] flex flex-col bg-white min-h-0 overflow-y-auto">
+        <aside className="w-full lg:w-[460px] xl:w-[510px] flex flex-col bg-white min-h-0 overflow-y-auto">
           {panelMode === 'tests' ? (
             <MBlockUnitTestPanel
               programName={activeProgram?.name || 'mBlock OBC'}
@@ -793,6 +910,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               onRunSingle={(testId) => void handleRunSingleUnitTest(testId)}
               onToggleTest={handleToggleUnitTest}
               onAddCustomTest={handleAddCustomUnitTest}
+              onUpdateTest={handleUpdateUnitTest}
               onDeleteTest={handleDeleteUnitTest}
               onResetTests={handleResetUnitTests}
               onFocusBlock={handleFocusBlock}
@@ -833,19 +951,20 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               }
               onToggleFault={handleToggleFault}
               onSendCommand={sendTelecommand}
+              onCaptureMakeblockFrame={handleCaptureMakeblockFrame}
               onClearLogs={() => setTelemetry((p) => ({ ...p, logs: [] }))}
               onRunPreflight={handleRunPreflight}
               onExportFirmware={handleDownloadCode}
             />
           ) : panelMode === 'code' ? (
-            /* Upload Mode: Synchronized Python / C++ Transpiler View */
+            /* Upload Mode: Synchronized Python / Codey / Makeblock C++ / .s2e & .h Bundle View */
             <div className="flex flex-col h-full">
-              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-200 bg-slate-50">
-                <div className="flex items-center p-0.5 bg-slate-200/70 rounded-md">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-slate-200 bg-slate-50">
+                <div className="flex flex-wrap items-center p-0.5 bg-slate-200/70 rounded-md">
                   <button
                     type="button"
                     onClick={() => setCodeLang('python')}
-                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                    className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
                       codeLang === 'python'
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -855,14 +974,36 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                   </button>
                   <button
                     type="button"
+                    onClick={() => setCodeLang('codey')}
+                    className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                      codeLang === 'codey'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Codey / CyberPi
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setCodeLang('cpp')}
-                    className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                    className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
                       codeLang === 'cpp'
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    Arduino / STM32 C++
+                    Makeblock C++
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCodeLang('bundle')}
+                    className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                      codeLang === 'bundle'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    .s2e / .h
                   </button>
                 </div>
 
@@ -886,10 +1027,73 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                 </div>
               </div>
 
+              {(codeLang === 'cpp' || codeLang === 'bundle') && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-slate-100/70 border-b border-slate-200 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-500">Плата:</span>
+                    <button
+                      type="button"
+                      onClick={() => setBoardProfile('auriga_stm32')}
+                      className={`px-2 py-0.5 rounded font-medium border transition-colors ${
+                        boardProfile === 'auriga_stm32'
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      Auriga / STM32F4
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBoardProfile('gizduino_avr')}
+                      className={`px-2 py-0.5 rounded font-medium border transition-colors ${
+                        boardProfile === 'gizduino_avr'
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      MeOrion / e-Gizmo AVR
+                    </button>
+                  </div>
+
+                  {codeLang === 'bundle' && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setBundleFile('s2e')}
+                        className={`px-2 py-0.5 rounded font-mono text-[11px] border transition-colors ${
+                          bundleFile === 's2e'
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        school76_cubesat.s2e
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBundleFile('header')}
+                        className={`px-2 py-0.5 rounded font-mono text-[11px] border transition-colors ${
+                          bundleFile === 'header'
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        School76CubeSat.h
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="px-4 py-2 bg-white border-b border-slate-200 text-xs text-slate-500">
                 {codeLang === 'python'
                   ? 'Трансляция блоков mBlock в MicroPython для бортового контроллера ESP32 / CyberPi.'
-                  : 'Генерация прошивки C++ для STM32F4 / Arduino OBC в режиме загрузки.'}
+                  : codeLang === 'codey'
+                    ? MAKEBLOCK_BOARD_PROFILES.codey_esp32.description
+                    : codeLang === 'cpp'
+                      ? MAKEBLOCK_BOARD_PROFILES[boardProfile].description
+                      : bundleFile === 's2e'
+                        ? 'Дескриптор расширения mBlock (.s2e JSON) для загрузки блоков кубсата 1U в Makeblock / e-Gizmo mBlock.'
+                        : `Заголовок School76CubeSat.h с драйверами MeGyro (tau=0.5s), PID-стабилизацией и кадрами 0xFF 0x55 (${MAKEBLOCK_BOARD_PROFILES[boardProfile].mcu}).`}
               </div>
 
               <pre className="flex-1 overflow-auto p-4 bg-slate-950 text-slate-100 font-mono text-xs leading-relaxed">

@@ -494,4 +494,137 @@ void onCommand_CAPTURE() {
       },
     },
   },
+  {
+    id: 'prog-codey-imu-pid',
+    name: 'MeGyro Калибровка, ПИД и кадр 0xFF55',
+    subsystem: 'ADCS',
+    targetBoard: 'CyberPi / ESP32 (MicroPython)',
+    author: 'Артём Соколов',
+    description:
+      'Калибровка IMU MeGyro при старте (500 отсчётов), ПИД-стабилизация оси Pitch с RGB LED индикацией и передача бинарного кадра Makeblock 0xFF 0x55.',
+    updatedAt: '2026-11-24T10:30:00.000Z',
+    pythonCode: `from cubesat import obc, eps, adcs, comms
+import time
+
+def on_boot():
+    obc.set_mode('NOMINAL')
+    eps.set_rail('ADCS_5V', True)
+    adcs.calibrate_gyro()
+    obc.set_led(0, 180, 255)
+    obc.beep(880, 120)
+
+def on_tick_1s():
+    obc.reset_watchdog()
+    adcs.stabilize_pid('X', 0, kp=2.5, kd=0.6)
+    comms.send_makeblock_frame()
+`,
+    cppCode: `#include <MeAuriga.h>
+#include <School76CubeSat.h>
+
+void setup() {
+  CubeSat.begin();
+  obc.setMode(OBC_NOMINAL);
+  eps.setRail(RAIL_ADCS_5V, true);
+  adcs.calibrateGyro();
+  obc.setLed(0, 180, 255);
+  obc.beep(880, 120);
+}
+
+void onTelemetryTick() {
+  obc.resetWatchdog();
+  adcs.stabilizePid('X', 0, 2.5, 0.6);
+  comms.sendMakeblockFrame(eps.batteryVoltage());
+}
+
+void loop() {
+  CubeSat.runEvery(1000, onTelemetryTick);
+}
+`,
+    workspaceJson: {
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: 'sat_event_boot',
+            id: 'mb_boot',
+            x: 36,
+            y: 32,
+            next: {
+              block: {
+                type: 'obc_set_mode',
+                id: 'mb_mode',
+                fields: { MODE: 'NOMINAL' },
+                next: {
+                  block: {
+                    type: 'eps_set_rail',
+                    id: 'mb_rail',
+                    fields: { RAIL: 'ADCS_5V', STATE: 'ON' },
+                    next: {
+                      block: {
+                        type: 'adcs_calibrate_gyro',
+                        id: 'mb_cal',
+                        next: {
+                          block: {
+                            type: 'obc_set_status_led',
+                            id: 'mb_led',
+                            inputs: {
+                              R: { shadow: { type: 'math_number', id: 'led_r', fields: { NUM: 0 } } },
+                              G: { shadow: { type: 'math_number', id: 'led_g', fields: { NUM: 180 } } },
+                              B: { shadow: { type: 'math_number', id: 'led_b', fields: { NUM: 255 } } },
+                            },
+                            next: {
+                              block: {
+                                type: 'obc_play_buzzer',
+                                id: 'mb_buz',
+                                inputs: {
+                                  FREQ: { shadow: { type: 'math_number', id: 'buz_f', fields: { NUM: 880 } } },
+                                  MS: { shadow: { type: 'math_number', id: 'buz_m', fields: { NUM: 120 } } },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: 'sat_event_loop_tick',
+            id: 'mb_tick',
+            x: 36,
+            y: 310,
+            fields: { SEC: 1 },
+            next: {
+              block: {
+                type: 'obc_reset_watchdog',
+                id: 'mb_wdt',
+                next: {
+                  block: {
+                    type: 'adcs_pid_stabilize',
+                    id: 'mb_pid',
+                    fields: { AXIS: 'X' },
+                    inputs: {
+                      TARGET: { shadow: { type: 'math_number', id: 'pid_t', fields: { NUM: 0 } } },
+                      KP: { shadow: { type: 'math_number', id: 'pid_p', fields: { NUM: 2.5 } } },
+                      KD: { shadow: { type: 'math_number', id: 'pid_d', fields: { NUM: 0.6 } } },
+                    },
+                    next: {
+                      block: {
+                        type: 'comms_send_makeblock_frame',
+                        id: 'mb_frm',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
 ];
+

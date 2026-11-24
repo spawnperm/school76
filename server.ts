@@ -10,6 +10,7 @@ import type {
   ChatMessage,
   CommunityProject,
   CubeSatTask,
+  MissionLifecycleStage,
   MissionSnapshot,
   OnboardProgram,
   ProgramVersion,
@@ -49,8 +50,13 @@ import {
 } from './server/garageS3.ts';
 import {
   commitAndPushToGitHub,
+  dispatchGitHubUnitTests,
+  findLatestWorkflowRun,
   getGitHubStatus,
+  getGitHubWorkflowRunLogs,
+  getGitHubWorkflowRunStatus,
   listGitHubWorkflowRuns,
+  listGitHubWorkflows,
   rerunGitHubWorkflowRun,
   sanitizeGitHubRepo,
 } from './server/githubSync.ts';
@@ -78,6 +84,7 @@ interface PersistedState {
 const VALID_SUBSYSTEMS = new Set<Subsystem>(['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND']);
 const VALID_STATUSES = new Set<TaskStatus>(['backlog', 'in_progress', 'review', 'done']);
 const VALID_PRIORITIES = new Set<TaskPriority>(['low', 'medium', 'high', 'critical']);
+const VALID_LIFECYCLE_STAGES = new Set<MissionLifecycleStage>(['design', 'assembly', 'testing', 'launch']);
 const VALID_CHANNELS = new Set<ChatChannelId>([
   'general',
   'obc-firmware',
@@ -1051,6 +1058,17 @@ async function startServer() {
       }
     }
 
+    if (req.body?.lifecycleStage !== undefined) {
+      if (req.body.lifecycleStage === null || req.body.lifecycleStage === '') {
+        delete project.lifecycleStage;
+      } else if (VALID_LIFECYCLE_STAGES.has(req.body.lifecycleStage as MissionLifecycleStage)) {
+        project.lifecycleStage = req.body.lifecycleStage as MissionLifecycleStage;
+      } else {
+        res.status(400).json({ error: 'Некорректный этап жизненного цикла миссии' });
+        return;
+      }
+    }
+
     saveState(state);
     broadcastSocialSync();
     res.json({ project });
@@ -1792,6 +1810,21 @@ ${recentCommitsText}`;
     }
   });
 
+  app.get('/api/github/actions/runs/:runId/logs', async (req, res) => {
+    try {
+      const headerToken = req.header('x-github-token') || undefined;
+      const data = await getGitHubWorkflowRunLogs(
+        __dirname,
+        req.params.runId,
+        req.query.repo,
+        headerToken
+      );
+      res.json(data);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub logs error' });
+    }
+  });
+
   app.post('/api/github/actions/runs/:runId/rerun', requireAuth, async (req, res) => {
     try {
       const result = await rerunGitHubWorkflowRun(
@@ -1803,6 +1836,87 @@ ${recentCommitsText}`;
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub Actions rerun failed' });
+    }
+  });
+
+  app.get('/api/github/actions/workflows', async (req, res) => {
+    try {
+      const headerToken = req.header('x-github-token') || undefined;
+      const projectId = typeof req.query.projectId === 'string' ? req.query.projectId.trim() : '';
+      const projectRepo = projectId
+        ? state.projects.find((p) => p.id === projectId)?.githubRepo
+        : undefined;
+      const targetRepo =
+        typeof req.query.repo === 'string' && req.query.repo.trim()
+          ? req.query.repo
+          : projectRepo;
+      const data = await listGitHubWorkflows(__dirname, targetRepo, headerToken);
+      res.json(data);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub workflows error' });
+    }
+  });
+
+  app.get('/api/github/actions/workflows/:workflowId/latest-run', async (req, res) => {
+    try {
+      const headerToken = req.header('x-github-token') || undefined;
+      const data = await findLatestWorkflowRun(
+        __dirname,
+        req.query.repo,
+        req.params.workflowId,
+        req.query.branch,
+        req.query.since,
+        headerToken
+      );
+      res.json(data);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub run lookup error' });
+    }
+  });
+
+  app.post('/api/github/actions/dispatch-tests', requireAuth, async (req, res) => {
+    try {
+      const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
+      const projectRepo = projectId
+        ? state.projects.find((p) => p.id === projectId)?.githubRepo
+        : undefined;
+      const targetRepo =
+        typeof req.body?.repo === 'string' && req.body.repo.trim()
+          ? req.body.repo
+          : projectRepo;
+      const result = await dispatchGitHubUnitTests(__dirname, {
+        rawRepo: targetRepo,
+        rawBranch: req.body?.branch,
+        rawWorkflowId: req.body?.workflowId,
+        rawToken: req.body?.token,
+      });
+      res.json(result);
+    } catch (err) {
+      const customErr = err as Error & { code?: string; latestRun?: unknown };
+      if (customErr?.code === 'NO_WORKFLOW_DISPATCH') {
+        res.status(422).json({
+          error: customErr.message,
+          code: customErr.code,
+          latestRun: customErr.latestRun || null,
+        });
+        return;
+      }
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub Actions dispatch failed' });
+    }
+  });
+
+  app.get('/api/github/actions/runs/:runId/status', async (req, res) => {
+    try {
+      const headerToken = req.header('x-github-token') || undefined;
+      const snapshot = await getGitHubWorkflowRunStatus(
+        __dirname,
+        req.params.runId,
+        req.query.repo,
+        headerToken
+      );
+      res.json(snapshot);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'GitHub run status error' });
     }
   });
 

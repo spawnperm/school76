@@ -1,10 +1,11 @@
 import * as Blockly from 'blockly';
 import { pythonGenerator, Order as PyOrder } from 'blockly/python';
 import { javascriptGenerator, Order as JsOrder } from 'blockly/javascript';
+import type { MakeblockBoardProfileId } from './makeblockHardware.ts';
 
 let generatorsRegistered = false;
 
-// Custom C++ Generator for STM32 / Arduino OBC (mBlock Upload Mode pattern)
+// Custom C++ Generator for STM32 / Makeblock Auriga / gizDuino AVR (mBlock Upload Mode pattern)
 export const cppGenerator = new Blockly.Generator('CPP');
 const CPP_ORDER = {
   ATOMIC: 0,
@@ -22,6 +23,16 @@ cppGenerator.scrub_ = function (block, code, thisOnly) {
   const nextBlock = block.nextConnection && block.nextConnection.targetBlock();
   if (nextBlock && !thisOnly) {
     return code + cppGenerator.blockToCode(nextBlock);
+  }
+  return code;
+};
+
+// Codey Rocky / CyberPi ESP32 MicroPython Generator (pattern from dr-one-life/codey-rocky)
+export const codeyGenerator = new Blockly.Generator('CODEY_PY');
+codeyGenerator.scrub_ = function (block, code, thisOnly) {
+  const nextBlock = block.nextConnection && block.nextConnection.targetBlock();
+  if (nextBlock && !thisOnly) {
+    return code + codeyGenerator.blockToCode(nextBlock);
   }
   return code;
 };
@@ -80,6 +91,19 @@ export function registerCubeSatGenerators() {
     return [`obc.get_mode()`, PyOrder.FUNCTION_CALL];
   };
 
+  pythonGenerator.forBlock['obc_set_status_led'] = function (block, generator) {
+    const r = generator.valueToCode(block, 'R', PyOrder.NONE) || '0';
+    const g = generator.valueToCode(block, 'G', PyOrder.NONE) || '180';
+    const b = generator.valueToCode(block, 'B', PyOrder.NONE) || '255';
+    return `obc.set_led(${r}, ${g}, ${b})\n`;
+  };
+
+  pythonGenerator.forBlock['obc_play_buzzer'] = function (block, generator) {
+    const freq = generator.valueToCode(block, 'FREQ', PyOrder.NONE) || '880';
+    const ms = generator.valueToCode(block, 'MS', PyOrder.NONE) || '150';
+    return `obc.beep(${freq}, ${ms})\n`;
+  };
+
   pythonGenerator.forBlock['eps_read_battery_pct'] = function () {
     return [`eps.battery_pct()`, PyOrder.FUNCTION_CALL];
   };
@@ -109,6 +133,23 @@ export function registerCubeSatGenerators() {
     return [`adcs.gyro('${axis}')`, PyOrder.FUNCTION_CALL];
   };
 
+  pythonGenerator.forBlock['adcs_read_angle'] = function (block) {
+    const axis = block.getFieldValue('AXIS');
+    return [`adcs.angle('${axis}')`, PyOrder.FUNCTION_CALL];
+  };
+
+  pythonGenerator.forBlock['adcs_calibrate_gyro'] = function () {
+    return `adcs.calibrate_gyro()\n`;
+  };
+
+  pythonGenerator.forBlock['adcs_pid_stabilize'] = function (block, generator) {
+    const axis = block.getFieldValue('AXIS');
+    const target = generator.valueToCode(block, 'TARGET', PyOrder.NONE) || '0';
+    const kp = generator.valueToCode(block, 'KP', PyOrder.NONE) || '2.5';
+    const kd = generator.valueToCode(block, 'KD', PyOrder.NONE) || '0.6';
+    return `adcs.stabilize_pid('${axis}', ${target}, kp=${kp}, kd=${kd})\n`;
+  };
+
   pythonGenerator.forBlock['adcs_read_sun_sensor'] = function () {
     return [`adcs.sun_flux()`, PyOrder.FUNCTION_CALL];
   };
@@ -131,6 +172,10 @@ export function registerCubeSatGenerators() {
 
   pythonGenerator.forBlock['comms_send_telemetry'] = function () {
     return `comms.send_telemetry()\n`;
+  };
+
+  pythonGenerator.forBlock['comms_send_makeblock_frame'] = function () {
+    return `comms.send_makeblock_frame()\n`;
   };
 
   pythonGenerator.forBlock['comms_set_tx_power'] = function (block) {
@@ -214,6 +259,19 @@ export function registerCubeSatGenerators() {
     return [`obc.getMode()`, CPP_ORDER.ATOMIC];
   };
 
+  cppGenerator.forBlock['obc_set_status_led'] = function (block, generator) {
+    const r = generator.valueToCode(block, 'R', CPP_ORDER.NONE) || '0';
+    const g = generator.valueToCode(block, 'G', CPP_ORDER.NONE) || '180';
+    const b = generator.valueToCode(block, 'B', CPP_ORDER.NONE) || '255';
+    return `obc.setLed(${r}, ${g}, ${b});\n`;
+  };
+
+  cppGenerator.forBlock['obc_play_buzzer'] = function (block, generator) {
+    const freq = generator.valueToCode(block, 'FREQ', CPP_ORDER.NONE) || '880';
+    const ms = generator.valueToCode(block, 'MS', CPP_ORDER.NONE) || '150';
+    return `obc.beep(${freq}, ${ms});\n`;
+  };
+
   cppGenerator.forBlock['eps_read_battery_pct'] = function () {
     return [`eps.batteryPct()`, CPP_ORDER.ATOMIC];
   };
@@ -241,6 +299,22 @@ export function registerCubeSatGenerators() {
     return [`adcs.gyro('${block.getFieldValue('AXIS')}')`, CPP_ORDER.ATOMIC];
   };
 
+  cppGenerator.forBlock['adcs_read_angle'] = function (block) {
+    return [`adcs.angle('${block.getFieldValue('AXIS')}')`, CPP_ORDER.ATOMIC];
+  };
+
+  cppGenerator.forBlock['adcs_calibrate_gyro'] = function () {
+    return `adcs.calibrateGyro();\n`;
+  };
+
+  cppGenerator.forBlock['adcs_pid_stabilize'] = function (block, generator) {
+    const axis = block.getFieldValue('AXIS');
+    const target = generator.valueToCode(block, 'TARGET', CPP_ORDER.NONE) || '0';
+    const kp = generator.valueToCode(block, 'KP', CPP_ORDER.NONE) || '2.5';
+    const kd = generator.valueToCode(block, 'KD', CPP_ORDER.NONE) || '0.6';
+    return `adcs.stabilizePid('${axis}', ${target}, ${kp}, ${kd});\n`;
+  };
+
   cppGenerator.forBlock['adcs_read_sun_sensor'] = function () {
     return [`adcs.sunFlux()`, CPP_ORDER.ATOMIC];
   };
@@ -263,6 +337,10 @@ export function registerCubeSatGenerators() {
 
   cppGenerator.forBlock['comms_send_telemetry'] = function () {
     return `comms.sendTelemetry();\n`;
+  };
+
+  cppGenerator.forBlock['comms_send_makeblock_frame'] = function () {
+    return `comms.sendMakeblockFrame(eps.batteryVoltage());\n`;
   };
 
   cppGenerator.forBlock['comms_set_tx_power'] = function (block) {
@@ -425,6 +503,19 @@ export function registerCubeSatGenerators() {
     return [`sim.getMode()`, JsOrder.FUNCTION_CALL];
   };
 
+  javascriptGenerator.forBlock['obc_set_status_led'] = function (block, generator) {
+    const r = generator.valueToCode(block, 'R', JsOrder.NONE) || '0';
+    const g = generator.valueToCode(block, 'G', JsOrder.NONE) || '180';
+    const b = generator.valueToCode(block, 'B', JsOrder.NONE) || '255';
+    return `sim.setLed(${r}, ${g}, ${b});\n`;
+  };
+
+  javascriptGenerator.forBlock['obc_play_buzzer'] = function (block, generator) {
+    const freq = generator.valueToCode(block, 'FREQ', JsOrder.NONE) || '880';
+    const ms = generator.valueToCode(block, 'MS', JsOrder.NONE) || '150';
+    return `sim.playBuzzer(${freq}, ${ms});\n`;
+  };
+
   javascriptGenerator.forBlock['eps_read_battery_pct'] = function () {
     return [`sim.batteryPct()`, JsOrder.FUNCTION_CALL];
   };
@@ -452,6 +543,22 @@ export function registerCubeSatGenerators() {
     return [`sim.gyro('${block.getFieldValue('AXIS')}')`, JsOrder.FUNCTION_CALL];
   };
 
+  javascriptGenerator.forBlock['adcs_read_angle'] = function (block) {
+    return [`sim.angle('${block.getFieldValue('AXIS')}')`, JsOrder.FUNCTION_CALL];
+  };
+
+  javascriptGenerator.forBlock['adcs_calibrate_gyro'] = function () {
+    return `sim.calibrateGyro();\n`;
+  };
+
+  javascriptGenerator.forBlock['adcs_pid_stabilize'] = function (block, generator) {
+    const axis = block.getFieldValue('AXIS');
+    const target = generator.valueToCode(block, 'TARGET', JsOrder.NONE) || '0';
+    const kp = generator.valueToCode(block, 'KP', JsOrder.NONE) || '2.5';
+    const kd = generator.valueToCode(block, 'KD', JsOrder.NONE) || '0.6';
+    return `sim.pidStabilize('${axis}', ${target}, ${kp}, ${kd});\n`;
+  };
+
   javascriptGenerator.forBlock['adcs_read_sun_sensor'] = function () {
     return [`sim.sunFlux()`, JsOrder.FUNCTION_CALL];
   };
@@ -474,6 +581,10 @@ export function registerCubeSatGenerators() {
 
   javascriptGenerator.forBlock['comms_send_telemetry'] = function () {
     return `sim.sendTelemetry();\n`;
+  };
+
+  javascriptGenerator.forBlock['comms_send_makeblock_frame'] = function () {
+    return `sim.sendMakeblockFrame();\n`;
   };
 
   javascriptGenerator.forBlock['comms_set_tx_power'] = function (block) {
@@ -503,9 +614,89 @@ export function registerCubeSatGenerators() {
     }
     return jsOriginalScrub.call(this, block, code, thisOnly);
   };
+
+  // ==========================
+  // 4. CODEY ROCKY / CYBERPI MICROPYTHON GENERATOR
+  // ==========================
+  Object.assign(codeyGenerator.forBlock, pythonGenerator.forBlock);
+
+  codeyGenerator.forBlock['sat_event_boot'] = function (block, generator) {
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '    pass\n';
+    const indented = generator.prefixLines(typeof body === 'string' ? body : body[0], '    ');
+    return `@event.start\ndef on_start():\n    codey.display.show('S76')\n${indented || '    pass\n'}\n`;
+  };
+
+  codeyGenerator.forBlock['sat_event_loop_tick'] = function (block, generator) {
+    const sec = block.getFieldValue('SEC') || 2;
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '    pass\n';
+    const indented = generator.prefixLines(typeof body === 'string' ? body : body[0], '    ');
+    return `def telemetry_cycle():\n    while True:\n${generator.prefixLines(indented || '    pass\n', '    ')}        time.sleep(${sec})\n\n`;
+  };
+
+  codeyGenerator.forBlock['sat_event_telecommand'] = function (block, generator) {
+    const cmd = block.getFieldValue('CMD') || 'PING';
+    const btnMap: Record<string, string> = {
+      PING: 'button_a_pressed',
+      CAPTURE: 'button_b_pressed',
+      SAFE: 'button_c_pressed',
+      NOMINAL: 'shaked',
+      DETUMBLE: 'tilted_left',
+    };
+    const dec = btnMap[cmd] || 'button_a_pressed';
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '    pass\n';
+    const indented = generator.prefixLines(typeof body === 'string' ? body : body[0], '    ');
+    return `@event.${dec}\ndef on_cmd_${cmd}():\n${indented || '    pass\n'}\n`;
+  };
+
+  codeyGenerator.forBlock['obc_set_mode'] = function (block) {
+    const mode = block.getFieldValue('MODE');
+    return `obc.set_mode('${mode}')\ncodey.display.show('${mode.slice(0, 4)}')\n`;
+  };
+
+  codeyGenerator.forBlock['obc_set_status_led'] = function (block, generator) {
+    const r = generator.valueToCode(block, 'R', PyOrder.NONE) || '0';
+    const g = generator.valueToCode(block, 'G', PyOrder.NONE) || '180';
+    const b = generator.valueToCode(block, 'B', PyOrder.NONE) || '255';
+    return `codey.led.show(${r}, ${g}, ${b})\n`;
+  };
+
+  codeyGenerator.forBlock['obc_play_buzzer'] = function (block, generator) {
+    const freq = generator.valueToCode(block, 'FREQ', PyOrder.NONE) || '880';
+    const ms = generator.valueToCode(block, 'MS', PyOrder.NONE) || '150';
+    return `codey.speaker.play_tone(${freq}, (${ms}) / 1000.0)\n`;
+  };
+
+  codeyGenerator.forBlock['adcs_read_gyro'] = function (block) {
+    const axis = block.getFieldValue('AXIS').toLowerCase();
+    return [`codey.motion_sensor.get_gyro(${axis === 'x' ? "'x'" : axis === 'y' ? "'y'" : "'z'"})`, PyOrder.FUNCTION_CALL];
+  };
+
+  codeyGenerator.forBlock['adcs_read_angle'] = function (block) {
+    const axis = block.getFieldValue('AXIS');
+    const method = axis === 'Y' ? 'get_roll' : axis === 'Z' ? 'get_yaw' : 'get_pitch';
+    return [`codey.motion_sensor.${method}()`, PyOrder.FUNCTION_CALL];
+  };
+
+  const codeyOrigScrub = codeyGenerator.scrub_;
+  codeyGenerator.scrub_ = function (block, code, thisOnly) {
+    if (
+      block.type === 'sat_event_boot' ||
+      block.type === 'sat_event_loop_tick' ||
+      block.type === 'sat_event_telecommand'
+    ) {
+      return code;
+    }
+    return codeyOrigScrub.call(this, block, code, thisOnly);
+  };
 }
 
-export function generateCubeSatCode(workspace: Blockly.Workspace) {
+export function generateCubeSatCode(
+  workspace: Blockly.Workspace,
+  boardProfile: MakeblockBoardProfileId = 'auriga_stm32'
+) {
   registerCubeSatGenerators();
 
   const pyBody = pythonGenerator.workspaceToCode(workspace).trim();
@@ -516,14 +707,35 @@ export function generateCubeSatCode(workspace: Blockly.Workspace) {
     pyBody || '# Перетащите блоки событий и подсистем кубсата в рабочую область',
   ].join('\n');
 
+  const codeyBody = codeyGenerator.workspaceToCode(workspace).trim();
+  const codeyCode = [
+    'import codey, event, time',
+    'from cubesat import obc, eps, adcs, comms, payload',
+    '',
+    codeyBody || '# Программа Codey Rocky / CyberPi (ESP32 MicroPython)',
+  ].join('\n');
+
   const cppBody = cppGenerator.workspaceToCode(workspace).trim();
+  const cppHeader =
+    boardProfile === 'gizduino_avr'
+      ? [
+          '#include <MeOrion.h>',
+          '#include <School76CubeSat.h>',
+          '// Неблокирующий аппаратный планировщик e-Gizmo RTC (10 мс)',
+          'unsigned long RTC = 0;',
+        ].join('\n')
+      : [
+          '#include <MeAuriga.h>',
+          '#include <School76CubeSat.h>',
+        ].join('\n');
+
   const cppCode = [
-    '#include <School76CubeSat.h>',
+    cppHeader,
     '',
     cppBody || '// Перетащите блоки событий и подсистем кубсата в рабочую область',
   ].join('\n');
 
   const jsCode = javascriptGenerator.workspaceToCode(workspace);
 
-  return { pythonCode, cppCode, jsCode };
+  return { pythonCode, codeyCode, cppCode, jsCode };
 }

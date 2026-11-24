@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   Ban,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
@@ -13,13 +15,19 @@ import {
   KeyRound,
   Link2,
   Loader2,
+  Maximize2,
   Play,
   RefreshCw,
   RotateCcw,
   Terminal,
+  X,
   XCircle,
 } from 'lucide-react';
-import type { CiWorkflowRun, CommunityProject } from '../types/cubesat.ts';
+import type {
+  CiWorkflowRun,
+  CommunityProject,
+  GitHubRunLogsResponse,
+} from '../types/cubesat.ts';
 
 interface CiActionsPanelProps {
   projects: CommunityProject[];
@@ -123,6 +131,14 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
   const [githubError, setGithubError] = useState<string | null>(null);
   const [githubNotice, setGithubNotice] = useState<string | null>(null);
   const [rerunningGithubId, setRerunningGithubId] = useState<string | null>(null);
+  const [expandedGithubIds, setExpandedGithubIds] = useState<Record<string, boolean>>({});
+  const [githubLogsByRunId, setGithubLogsByRunId] = useState<Record<string, GitHubRunLogsResponse>>(
+    {}
+  );
+  const [loadingGithubLogsId, setLoadingGithubLogsId] = useState<string | null>(null);
+  const [githubLogsErrorByRunId, setGithubLogsErrorByRunId] = useState<Record<string, string>>({});
+  const [modalLogRun, setModalLogRun] = useState<CiWorkflowRun | null>(null);
+  const [copiedLogKey, setCopiedLogKey] = useState<string | null>(null);
 
   // Team GitHub binding editor
   const [editingTeamRepo, setEditingTeamRepo] = useState(false);
@@ -217,6 +233,66 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
     setTeamRepoDraft(activeProject.githubRepo || '');
   }, [activeProject.id, activeProject.githubRepo]);
 
+  const fetchGitHubRunLogs = useCallback(
+    async (run: CiWorkflowRun) => {
+      setLoadingGithubLogsId(run.id);
+      setGithubLogsErrorByRunId((prev) => {
+        const next = { ...prev };
+        delete next[run.id];
+        return next;
+      });
+      try {
+        const params = new URLSearchParams({ repo: run.repo });
+        const headers: Record<string, string> = {};
+        if (githubPat.trim()) {
+          headers['X-GitHub-Token'] = githubPat.trim();
+        }
+        const res = await fetch(
+          `/api/github/actions/runs/${encodeURIComponent(run.id)}/logs?${params.toString()}`,
+          { headers }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Не удалось загрузить логи сборки');
+        }
+        setGithubLogsByRunId((prev) => ({
+          ...prev,
+          [run.id]: data as GitHubRunLogsResponse,
+        }));
+      } catch (err) {
+        setGithubLogsErrorByRunId((prev) => ({
+          ...prev,
+          [run.id]: err instanceof Error ? err.message : 'Ошибка загрузки логов',
+        }));
+      } finally {
+        setLoadingGithubLogsId((prev) => (prev === run.id ? null : prev));
+      }
+    },
+    [githubPat]
+  );
+
+  const handleToggleGithubRun = useCallback(
+    (run: CiWorkflowRun) => {
+      const nextExpanded = !expandedGithubIds[run.id];
+      setExpandedGithubIds((prev) => ({ ...prev, [run.id]: nextExpanded }));
+      if (nextExpanded && !githubLogsByRunId[run.id] && loadingGithubLogsId !== run.id) {
+        void fetchGitHubRunLogs(run);
+      }
+    },
+    [expandedGithubIds, githubLogsByRunId, loadingGithubLogsId, fetchGitHubRunLogs]
+  );
+
+  const handleCopyLogText = async (key: string, text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedLogKey(key);
+      window.setTimeout(() => setCopiedLogKey((cur) => (cur === key ? null : cur)), 2000);
+    } catch {
+      // Ignore clipboard permission errors
+    }
+  };
+
   const handleRerunGitHub = async (run: CiWorkflowRun) => {
     if (!isAuthenticated) {
       onRequireAuth();
@@ -236,6 +312,11 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
       setGithubNotice(
         `Запущен перезапуск сборки #${run.runNumber} (${run.workflowName}) в ${result.repo}.`
       );
+      setGithubLogsByRunId((prev) => {
+        const next = { ...prev };
+        delete next[run.id];
+        return next;
+      });
       await loadGitHubRuns();
     } catch (err) {
       setGithubError(err instanceof Error ? err.message : 'Не удалось перезапустить сборку');
@@ -549,82 +630,279 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
               {githubRuns.map((run) => {
                 const visual = getRunVisual(run);
                 const isRerunning = rerunningGithubId === run.id;
-                return (
-                  <div
-                    key={run.id}
-                    className="p-3.5 bg-white hover:bg-slate-50/60 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div className="mt-0.5">{visual.icon}</div>
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-slate-900 truncate">
-                            {run.title}
-                          </span>
-                          <span
-                            className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium border rounded ${visual.badgeClass}`}
-                          >
-                            {visual.label}
-                          </span>
-                          {run.runAttempt > 1 && (
-                            <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                              попытка #{run.runAttempt}
-                            </span>
-                          )}
-                        </div>
+                const isExpanded = Boolean(expandedGithubIds[run.id]);
+                const logData = githubLogsByRunId[run.id];
+                const logError = githubLogsErrorByRunId[run.id];
+                const isLoadingLogs = loadingGithubLogsId === run.id;
 
-                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-500 font-mono">
-                          <span className="text-slate-700 font-medium">
-                            {run.workflowName} #{run.runNumber}
-                          </span>
-                          <span>·</span>
-                          <span>{run.branch}</span>
-                          {run.commitSha && (
-                            <>
-                              <span>·</span>
-                              <span>{run.commitSha}</span>
-                            </>
+                return (
+                  <div key={run.id} className="bg-white">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
+                      onClick={() => handleToggleGithubRun(run)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleToggleGithubRun(run);
+                        }
+                      }}
+                      className="p-3.5 hover:bg-slate-50/70 flex flex-wrap items-center justify-between gap-3 cursor-pointer focus:outline-none focus:bg-slate-50"
+                    >
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <div className="mt-0.5 flex items-center gap-1.5">
+                          {isExpanded ? (
+                            <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          ) : (
+                            <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                           )}
-                          <span>·</span>
-                          <span className="font-sans">{run.actor}</span>
-                          <span>·</span>
-                          <span>{formatRunDate(run.createdAt)}</span>
-                          {run.durationSec !== undefined && (
-                            <>
-                              <span>·</span>
-                              <span>{formatDuration(run.durationSec)}</span>
-                            </>
-                          )}
+                          {visual.icon}
                         </div>
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold text-slate-900 truncate">
+                              {run.title}
+                            </span>
+                            <span
+                              className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium border rounded ${visual.badgeClass}`}
+                            >
+                              {visual.label}
+                            </span>
+                            {run.runAttempt > 1 && (
+                              <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                попытка #{run.runAttempt}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-500 font-mono">
+                            <span className="text-slate-700 font-medium">
+                              {run.workflowName} #{run.runNumber}
+                            </span>
+                            <span>·</span>
+                            <span>{run.branch}</span>
+                            {run.commitSha && (
+                              <>
+                                <span>·</span>
+                                <span>{run.commitSha}</span>
+                              </>
+                            )}
+                            <span>·</span>
+                            <span className="font-sans">{run.actor}</span>
+                            <span>·</span>
+                            <span>{formatRunDate(run.createdAt)}</span>
+                            {run.durationSec !== undefined && (
+                              <>
+                                <span>·</span>
+                                <span>{formatDuration(run.durationSec)}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div
+                        className="flex items-center gap-2 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleToggleGithubRun(run)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded hover:bg-slate-50"
+                        >
+                          <Terminal className="w-3 h-3" />
+                          {isExpanded ? 'Скрыть логи' : 'Логи'}
+                        </button>
+                        {run.htmlUrl && (
+                          <a
+                            href={run.htmlUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded hover:bg-slate-50"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            GitHub
+                          </a>
+                        )}
+                        {run.canRerun && (
+                          <button
+                            type="button"
+                            onClick={() => handleRerunGitHub(run)}
+                            disabled={isRerunning}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-rose-600 rounded hover:bg-rose-700 disabled:opacity-50"
+                          >
+                            <RotateCcw
+                              className={`w-3.5 h-3.5 ${isRerunning ? 'animate-spin' : ''}`}
+                            />
+                            {isRerunning ? 'Перезапуск...' : 'Перезапустить'}
+                          </button>
+                        )}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {run.htmlUrl && (
-                        <a
-                          href={run.htmlUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded hover:bg-slate-50"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          GitHub
-                        </a>
-                      )}
-                      {run.canRerun && (
-                        <button
-                          type="button"
-                          onClick={() => handleRerunGitHub(run)}
-                          disabled={isRerunning}
-                          className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-white bg-rose-600 rounded hover:bg-rose-700 disabled:opacity-50"
-                        >
-                          <RotateCcw
-                            className={`w-3.5 h-3.5 ${isRerunning ? 'animate-spin' : ''}`}
-                          />
-                          {isRerunning ? 'Перезапуск...' : 'Перезапустить'}
-                        </button>
-                      )}
-                    </div>
+                    {isExpanded && (
+                      <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="font-medium text-slate-800">
+                            {isLoadingLogs
+                              ? 'Загрузка шагов и сокращённого вывода сборки...'
+                              : logData?.condensedSummary || 'Диагностика сборки GitHub Actions'}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void fetchGitHubRunLogs(run)}
+                              disabled={isLoadingLogs}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-600 bg-white border border-slate-200 rounded hover:bg-slate-100 disabled:opacity-50"
+                            >
+                              <RefreshCw
+                                className={`w-3 h-3 ${isLoadingLogs ? 'animate-spin' : ''}`}
+                              />
+                              Обновить логи
+                            </button>
+                            {logData && (
+                              <button
+                                type="button"
+                                onClick={() => setModalLogRun(run)}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-sky-700 bg-sky-50 border border-sky-200 rounded hover:bg-sky-100"
+                              >
+                                <Maximize2 className="w-3 h-3" />
+                                В окне
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {logError && (
+                          <div className="px-3 py-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded">
+                            {logError}
+                          </div>
+                        )}
+
+                        {isLoadingLogs && !logData && (
+                          <div className="py-4 text-xs text-slate-500 flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+                            <span>Получение заданий и логов из GitHub API...</span>
+                          </div>
+                        )}
+
+                        {logData && logData.jobs.length > 0 && (
+                          <div className="space-y-3">
+                            {logData.jobs.map((job) => {
+                              const jobText = job.logLines.join('\n');
+                              const copyId = `gh-${run.id}-${job.id}`;
+                              return (
+                                <div
+                                  key={job.id}
+                                  className="bg-white border border-slate-200 rounded-md overflow-hidden"
+                                >
+                                  <div className="px-3.5 py-2 bg-slate-50/80 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                                    <div className="flex items-center gap-2">
+                                      {job.conclusion === 'failure' ||
+                                      job.conclusion === 'timed_out' ? (
+                                        <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                                      ) : job.conclusion === 'success' ? (
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                      ) : (
+                                        <Clock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                      )}
+                                      <span className="font-semibold text-slate-900">
+                                        Задание: {job.name}
+                                      </span>
+                                      {job.durationSec !== undefined && (
+                                        <span className="font-mono text-[11px] text-slate-500">
+                                          {formatDuration(job.durationSec)}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      {job.totalLogLines > 0 && (
+                                        <span className="font-mono text-[11px] text-slate-400">
+                                          фрагмент ({job.logLines.length} из {job.totalLogLines} строк)
+                                        </span>
+                                      )}
+                                      {jobText && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleCopyLogText(copyId, jobText)}
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-slate-600 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                                        >
+                                          {copiedLogKey === copyId ? (
+                                            <Check className="w-3 h-3 text-emerald-600" />
+                                          ) : (
+                                            <Copy className="w-3 h-3" />
+                                          )}
+                                          {copiedLogKey === copyId ? 'Скопировано' : 'Копировать'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {job.steps.length > 0 && (
+                                    <div className="px-3.5 py-2 border-b border-slate-100 flex flex-wrap gap-1.5">
+                                      {job.steps.map((step) => (
+                                        <span
+                                          key={`${job.id}-st-${step.number}`}
+                                          className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border ${
+                                            step.conclusion === 'failure' ||
+                                            step.conclusion === 'timed_out'
+                                              ? 'bg-rose-50 text-rose-800 border-rose-200 font-semibold'
+                                              : step.conclusion === 'success'
+                                                ? 'bg-emerald-50/70 text-emerald-800 border-emerald-200'
+                                                : 'bg-slate-50 text-slate-600 border-slate-200'
+                                          }`}
+                                        >
+                                          <span className="font-mono">#{step.number}</span>
+                                          <span>{step.name}</span>
+                                          {step.durationSec !== undefined && (
+                                            <span className="font-mono opacity-70">
+                                              ({formatDuration(step.durationSec)})
+                                            </span>
+                                          )}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {job.logNotice && (
+                                    <div className="px-3.5 py-2 text-[11px] text-amber-800 bg-amber-50/80 border-b border-amber-200">
+                                      {job.logNotice}
+                                    </div>
+                                  )}
+
+                                  {job.logLines.length > 0 && (
+                                    <pre className="p-3 bg-slate-950 text-slate-100 font-mono text-[11px] leading-relaxed max-h-64 overflow-auto whitespace-pre-wrap break-words">
+                                      {job.logLines.map((line, lIdx) => {
+                                        const isErrLine =
+                                          /##\[error\]|\berror\b|ERR!|\bFAIL\b|Exception|Process completed with exit code [1-9]|TS\d{4}:/i.test(
+                                            line
+                                          );
+                                        return (
+                                          <div
+                                            key={lIdx}
+                                            className={
+                                              isErrLine
+                                                ? 'bg-rose-950/70 text-rose-200 px-1.5 -mx-1.5 rounded'
+                                                : line.startsWith('... (пропущено')
+                                                  ? 'text-slate-400 italic py-0.5'
+                                                  : ''
+                                            }
+                                          >
+                                            {line}
+                                          </div>
+                                        );
+                                      })}
+                                    </pre>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -699,7 +977,31 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                 const isExpanded = Boolean(expandedRunIds[run.id]);
                 return (
                   <div key={run.id} className="bg-white">
-                    <div className="p-3.5 hover:bg-slate-50/60 flex flex-wrap items-center justify-between gap-3">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
+                      onClick={() => {
+                        if (run.steps && run.steps.length > 0) {
+                          setExpandedRunIds((prev) => ({
+                            ...prev,
+                            [run.id]: !prev[run.id],
+                          }));
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.key === 'Enter' || e.key === ' ') && run.steps && run.steps.length > 0) {
+                          e.preventDefault();
+                          setExpandedRunIds((prev) => ({
+                            ...prev,
+                            [run.id]: !prev[run.id],
+                          }));
+                        }
+                      }}
+                      className={`p-3.5 hover:bg-slate-50/60 flex flex-wrap items-center justify-between gap-3 ${
+                        run.steps && run.steps.length > 0 ? 'cursor-pointer' : ''
+                      }`}
+                    >
                       <div className="flex items-start gap-3 min-w-0 flex-1">
                         <div className="mt-0.5">{visual.icon}</div>
                         <div className="min-w-0 space-y-1 flex-1">
@@ -758,7 +1060,10 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div
+                        className="flex items-center gap-2 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {run.steps && run.steps.length > 0 && (
                           <button
                             type="button"
@@ -830,6 +1135,103 @@ export const CiActionsPanel: React.FC<CiActionsPanelProps> = ({
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal Log Viewer for GitHub Actions */}
+      {modalLogRun && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Логи сборки ${modalLogRun.workflowName} #${modalLogRun.runNumber}`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4"
+        >
+          <div className="w-full max-w-4xl max-h-[90vh] flex flex-col bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-sky-600 shrink-0" />
+                  <h3 className="text-sm font-bold text-slate-900 truncate">
+                    {modalLogRun.workflowName} #{modalLogRun.runNumber} · {modalLogRun.title}
+                  </h3>
+                </div>
+                <div className="text-[11px] font-mono text-slate-500 mt-0.5">
+                  {modalLogRun.repo} · {modalLogRun.branch} · {modalLogRun.commitSha}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalLogRun(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+                aria-label="Закрыть окно логов"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50/40">
+              {githubLogsByRunId[modalLogRun.id]?.condensedSummary && (
+                <div className="px-3.5 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded">
+                  {githubLogsByRunId[modalLogRun.id].condensedSummary}
+                </div>
+              )}
+
+              {(githubLogsByRunId[modalLogRun.id]?.jobs || []).map((job) => (
+                <div
+                  key={`modal-${job.id}`}
+                  className="bg-white border border-slate-200 rounded-md overflow-hidden"
+                >
+                  <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-slate-900">{job.name}</span>
+                    {job.totalLogLines > 0 && (
+                      <span className="font-mono text-[11px] text-slate-500">
+                        {job.logLines.length} / {job.totalLogLines} строк
+                      </span>
+                    )}
+                  </div>
+                  {job.logNotice && (
+                    <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-200">
+                      {job.logNotice}
+                    </div>
+                  )}
+                  {job.logLines.length > 0 && (
+                    <pre className="p-4 bg-slate-950 text-slate-100 font-mono text-[11px] leading-relaxed overflow-auto max-h-[50vh] whitespace-pre-wrap break-words">
+                      {job.logLines.join('\n')}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+              <div>
+                {modalLogRun.canRerun && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleRerunGitHub(modalLogRun);
+                    }}
+                    disabled={rerunningGithubId === modalLogRun.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 rounded hover:bg-rose-700 disabled:opacity-50"
+                  >
+                    <RotateCcw
+                      className={`w-3.5 h-3.5 ${
+                        rerunningGithubId === modalLogRun.id ? 'animate-spin' : ''
+                      }`}
+                    />
+                    Перезапустить сборку
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalLogRun(null)}
+                className="px-4 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-50"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>

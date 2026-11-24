@@ -15,6 +15,7 @@ import {
   ProjectsView,
 } from './components/CommunitiesAndCabinet.tsx';
 import { GitHubSyncModal } from './components/GitHubSyncModal.tsx';
+import { MissionStatusBadge } from './components/MissionStatusBadge.tsx';
 import type { ChatChannelId, CommunityProject, CubeSatTask, Subsystem } from './types/cubesat.ts';
 
 type WorkspaceTab = 'projects' | 'tasks' | 'wiki' | 'mblock' | 'chat' | 'cabinet';
@@ -74,6 +75,7 @@ export default function App() {
     updateMyProfile,
     toggleFollow,
     createProject,
+    updateProject,
     toggleJoinProject,
     generateProjectDescription,
     generateProjectReadme,
@@ -178,8 +180,22 @@ export default function App() {
           })}
         </nav>
 
-        {/* Zone 3: 1 primary action (Personal Cabinet / Sign In) */}
-        <div className="shrink-0">
+        {/* Zone 3: Mission Status + Primary Cabinet Action */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <MissionStatusBadge
+            activeProject={activeProject}
+            projects={projects}
+            tasks={tasks}
+            programs={programs}
+            currentUser={currentUser}
+            onSelectProject={setActiveProjectId}
+            onUpdateLifecycleStage={async (projectId, stage) => {
+              await updateProject(projectId, { lifecycleStage: stage });
+            }}
+            onRequireAuth={() => setShowAuthModal(true)}
+            onOpenTasks={() => setActiveTab('tasks')}
+          />
+
           <button
             type="button"
             onClick={() => {
@@ -189,7 +205,7 @@ export default function App() {
                 setActiveTab('cabinet');
               }
             }}
-            className={`px-4 py-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 max-w-[200px] truncate ${
+            className={`px-4 py-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 max-w-[190px] truncate ${
               activeTab === 'cabinet'
                 ? 'bg-sky-600 text-white'
                 : 'bg-slate-900 text-white hover:bg-slate-800'
@@ -361,6 +377,7 @@ export default function App() {
         isAuthenticated={Boolean(currentUser)}
         onRequireAuth={() => setShowAuthModal(true)}
         authFetch={authFetch}
+        activeProject={activeProject}
       />
     </div>
   );

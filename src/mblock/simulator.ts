@@ -1,3 +1,8 @@
+import {
+  buildCubeSatTelemetryFrames,
+  type MakeblockSerialFrame,
+} from './makeblockHardware.ts';
+
 export type ObcMode = 'NOMINAL' | 'SAFE' | 'SCIENCE' | 'DETUMBLE';
 
 export interface SimLogEntry {
@@ -37,7 +42,11 @@ export interface CubeSatTelemetry {
   };
   heaterOn: boolean;
   gyro: { X: number; Y: number; Z: number };
+  angles: { X: number; Y: number; Z: number };
+  gyroCalibrated: boolean;
   magnetorquer: { X: number; Y: number; Z: number };
+  ledRgb: { r: number; g: number; b: number };
+  lastBuzzerHz: number;
   txPowerDbm: number;
   radiationUsv: number;
   temps: { OBC: number; BAT: number; CAM: number; EPS: number; ADCS: number; COMMS: number };
@@ -52,6 +61,7 @@ export interface CubeSatTelemetry {
   watchdogResets: number;
   beaconsSent: number;
   packetsSent: number;
+  makeblockFramesCount: number;
   imagesCaptured: number;
   lastBeaconText: string;
   simTimeSec: number;
@@ -60,6 +70,7 @@ export interface CubeSatTelemetry {
   cpuLoadPct: number;
   faults: FaultInjectionState;
   history: TelemetryPoint[];
+  makeblockFrames: MakeblockSerialFrame[];
   logs: SimLogEntry[];
 }
 
@@ -281,7 +292,11 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     },
     heaterOn: false,
     gyro: { X: 4.8, Y: -2.1, Z: 1.4 },
+    angles: { X: 6.2, Y: -3.4, Z: 12.0 },
+    gyroCalibrated: false,
     magnetorquer: { X: 0, Y: 0, Z: 0 },
+    ledRgb: { r: 0, g: 180, b: 255 },
+    lastBuzzerHz: 0,
     txPowerDbm: 20,
     radiationUsv: 0.48,
     temps: { OBC: 24.4, BAT: 16.8, CAM: 18.2, EPS: 23.1, ADCS: 21.5, COMMS: 27.6 },
@@ -290,6 +305,7 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     watchdogResets: 0,
     beaconsSent: 0,
     packetsSent: 0,
+    makeblockFramesCount: 0,
     imagesCaptured: 0,
     lastBeaconText: 'SCHOOL76-1U READY',
     simTimeSec: 0,
@@ -313,6 +329,7 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
         loadW: 3.34,
       },
     ],
+    makeblockFrames: [],
     logs: [],
   };
 
@@ -397,6 +414,20 @@ export function stepCubeSatPhysics(prev: CubeSatTelemetry, dtSec: number): CubeS
   const nextTime = prev.simTimeSec + dtSec;
   const nextCpu = computeCpuLoadPct(prev, nextTime);
 
+  // Makeblock MeGyro complementary filter (tau = 0.5s -> alpha = 0.5 / (0.5 + dt))
+  const filterAlpha = 0.5 / (0.5 + dtSec);
+  const wrapAngle = (deg: number) => {
+    let a = ((deg + 180) % 360 + 360) % 360 - 180;
+    if (a === -180) a = 180;
+    return Number(a.toFixed(2));
+  };
+  const driftBias = prev.gyroCalibrated ? 0 : 0.35;
+  const nextAngles = {
+    X: wrapAngle((prev.angles.X + (nextGyro.X + driftBias) * dtSec) * filterAlpha),
+    Y: wrapAngle((prev.angles.Y + (nextGyro.Y - driftBias * 0.6) * dtSec) * filterAlpha),
+    Z: wrapAngle(prev.angles.Z + nextGyro.Z * dtSec),
+  };
+
   const point: TelemetryPoint = {
     t: Number(nextTime.toFixed(1)),
     batteryPct: Number(nextBat.toFixed(1)),
@@ -417,6 +448,7 @@ export function stepCubeSatPhysics(prev: CubeSatTelemetry, dtSec: number): CubeS
     cpuLoadPct: nextCpu,
     subsystemWatts: watts,
     gyro: nextGyro,
+    angles: nextAngles,
     watchdogAgeSec: nextWatchdog,
     temps: {
       OBC: stepThermal(prev.temps.OBC, watts.OBC, 0.85, 0.045, -18, 72),
@@ -493,6 +525,27 @@ export function createSimRuntime(
         watchdogResets: prev.watchdogResets + 1,
       }));
     },
+    setLed: (r: unknown, g: unknown, b: unknown) => {
+      const clamp255 = (v: unknown) => Math.max(0, Math.min(255, Math.round(Number(v || 0))));
+      const next = { r: clamp255(r), g: clamp255(g), b: clamp255(b) };
+      updateState((prev) => ({
+        ...prev,
+        ledRgb: next,
+        logs:
+          prev.ledRgb.r === next.r && prev.ledRgb.g === next.g && prev.ledRgb.b === next.b
+            ? prev.logs
+            : appendLog(prev, 'OBC', `RGB LED -> (${next.r}, ${next.g}, ${next.b})`),
+      }));
+    },
+    playBuzzer: (freq: unknown, ms: unknown) => {
+      const f = Math.max(80, Math.min(8000, Math.round(Number(freq || 880))));
+      const dur = Math.max(20, Math.min(3000, Math.round(Number(ms || 150))));
+      updateState((prev) => ({
+        ...prev,
+        lastBuzzerHz: f,
+        logs: appendLog(prev, 'OBC', `MeBuzzer: ${f} Гц (${dur} мс)`),
+      }));
+    },
     batteryPct: () => Number(getState().batteryPct.toFixed(1)),
     batteryVolt: () => Number(getState().batteryVolt.toFixed(2)),
     solarCurrent: (panel: 'X+' | 'X-' | 'Y+' | 'Y-' | 'Z+') =>
@@ -525,6 +578,54 @@ export function createSimRuntime(
       });
     },
     gyro: (axis: 'X' | 'Y' | 'Z') => Number(getState().gyro[axis].toFixed(2)),
+    angle: (axis: 'X' | 'Y' | 'Z') => Number(getState().angles[axis].toFixed(2)),
+    calibrateGyro: () => {
+      updateState((prev) => ({
+        ...prev,
+        gyroCalibrated: true,
+        angles: { X: 0, Y: 0, Z: prev.angles.Z },
+        logs: appendLog(prev, 'ADCS', 'MeGyro: калибровка нуля (500 отсчётов) завершена'),
+      }));
+    },
+    pidStabilize: (axis: 'X' | 'Y' | 'Z', target: unknown, kp: unknown, kd: unknown) => {
+      const targetDeg = Number(target || 0);
+      const kpVal = Math.max(0.1, Number(kp || 2.5));
+      const kdVal = Math.max(0, Number(kd || 0.6));
+      updateState((prev) => {
+        if (!prev.rails.ADCS_5V) {
+          return {
+            ...prev,
+            logs: appendLog(prev, 'ADCS', 'Ошибка PID: шина ADCS_5V отключена'),
+          };
+        }
+        const currAngle = prev.angles[axis];
+        const currRate = prev.gyro[axis];
+        const err = targetDeg - currAngle;
+        if (Math.abs(err) < 0.5 && Math.abs(currRate) < 0.3) {
+          return {
+            ...prev,
+            magnetorquer: { ...prev.magnetorquer, [axis]: 0 },
+          };
+        }
+        const effortPct = Math.max(
+          -100,
+          Math.min(100, Math.round(kpVal * err - kdVal * currRate))
+        );
+        const nextAngle = Number((currAngle + err * 0.42).toFixed(2));
+        const nextRate = Number((currRate * 0.65).toFixed(2));
+        return {
+          ...prev,
+          angles: { ...prev.angles, [axis]: nextAngle },
+          gyro: { ...prev.gyro, [axis]: nextRate },
+          magnetorquer: { ...prev.magnetorquer, [axis]: effortPct },
+          logs: appendLog(
+            prev,
+            'ADCS',
+            `PID ${axis}: θ=${nextAngle}° (цель ${targetDeg}°), MTQ=${effortPct}%`
+          ),
+        };
+      });
+    },
     sunFlux: () => (getState().inEclipse ? 0 : 94),
     setMagnetorquer: (axis: 'X' | 'Y' | 'Z', pct: unknown) => {
       const clamped = Math.max(-100, Math.min(100, Number(pct || 0)));
@@ -601,6 +702,21 @@ export function createSimRuntime(
             prev,
             'COMMS',
             `TLM #${prev.packetsSent + 1}: V=${prev.batteryVolt.toFixed(2)}V, SoC=${prev.batteryPct.toFixed(1)}%, T_bat=${prev.temps.BAT.toFixed(1)}°C`
+          ),
+        };
+      });
+    },
+    sendMakeblockFrame: () => {
+      updateState((prev) => {
+        const frames = buildCubeSatTelemetryFrames(prev);
+        return {
+          ...prev,
+          makeblockFramesCount: prev.makeblockFramesCount + 1,
+          makeblockFrames: [...frames, ...prev.makeblockFrames].slice(0, 24),
+          logs: appendLog(
+            prev,
+            'COMMS',
+            `0xFF 0x55 кадр #${prev.makeblockFramesCount + 1}: ${frames[0].hex}`
           ),
         };
       });
