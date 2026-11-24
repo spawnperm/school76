@@ -605,3 +605,114 @@ namespace CubeSat {
 #endif
 `;
 }
+
+export interface MBlock5ExtensionSpec {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  category: 'Core' | 'Protocol' | 'Sensors' | 'Robotics';
+  targets: string[];
+  description: string;
+  blocksCount: number;
+  requiredByDefault?: boolean;
+}
+
+export const MBLOCK5_EXTENSIONS_CATALOG: MBlock5ExtensionSpec[] = [
+  {
+    id: 'school76_cubesat_core',
+    name: 'School76 CubeSat 1U Core (OBC · EPS · COMMS)',
+    version: '1.2.76',
+    author: 'school76',
+    category: 'Core',
+    targets: ['cyberpi', 'auriga', 'arduino_mega2560', 'orion'],
+    description: 'Управление режимами OBC, силовыми шинами EPS, телеметрией FRAM и маяком AX.25 435.8 МГц.',
+    blocksCount: 16,
+    requiredByDefault: true,
+  },
+  {
+    id: 'upload_mode_broadcast',
+    name: 'Upload Mode Broadcast (0x46)',
+    version: '0.1.15',
+    author: 'Makeblock / school76',
+    category: 'Protocol',
+    targets: ['auriga', 'orion', 'arduino_uno', 'arduino_mega2560', 'cyberpi'],
+    description: 'Двусторонний обмен сообщениями между автономной прошивкой Upload Mode и сценой Stage по протоколу 0xFF 0x55.',
+    blocksCount: 4,
+    requiredByDefault: true,
+  },
+  {
+    id: 'makeblock_megyro_pid',
+    name: 'MeGyro + PID B-Dot ADCS',
+    version: '3.2.0',
+    author: 'Makeblock-Libraries',
+    category: 'Sensors',
+    targets: ['auriga', 'cyberpi', 'mcore'],
+    description: 'Комплементарный фильтр MeGyro (tau=0.5s), калибровка смещения и ПИД-стабилизация с зоной нечувствительности.',
+    blocksCount: 5,
+    requiredByDefault: true,
+  },
+  {
+    id: 'mdrawbot_azel_kinematics',
+    name: 'mDrawBot Az-El & SCARA Tracker',
+    version: '1.4.0',
+    author: 'Makeblock mDrawBot',
+    category: 'Robotics',
+    targets: ['orion', 'auriga'],
+    description: 'Кривые Безье и обратная кинематика SCARA/Az-El для наведения наземной антенны слежения.',
+    blocksCount: 2,
+    requiredByDefault: false,
+  },
+];
+
+/**
+ * Generates an mBlock 5 Extension Builder package manifest (manifest.json + arduinoc template)
+ * following Makeblock-official/mBlock5 .mext schema conventions.
+ */
+export function generateMBlock5MextManifest(
+  profileId: MakeblockBoardProfileId,
+  enabledExtensionIds: string[]
+): string {
+  const pkg = {
+    id: 'school76_cubesat_1u',
+    version: '1.2.76',
+    platform: ['mblockpc', 'mblockweb'],
+    targets:
+      profileId === 'codey_esp32'
+        ? ['cyberpi', 'halocode']
+        : profileId === 'gizduino_avr'
+          ? ['orion', 'arduino_uno', 'arduino_mega2560']
+          : ['auriga', 'mcore', 'arduino_mega2560'],
+    codeTypes: profileId === 'codey_esp32' ? ['python'] : ['arduinoc', 'python'],
+    extApiVersion: ['1.0.4', '1.0.5', '1.0.6'],
+    name: {
+      ru: 'Школьный Кубсат 1U (school76)',
+      en: 'School76 CubeSat 1U',
+    },
+    description: {
+      ru: 'Расширение mBlock 5 для бортового ПО кубсата 1U с поддержкой Upload Mode Broadcast (0x46) и MeGyro PID.',
+      en: 'mBlock 5 extension for 1U CubeSat OBC with Upload Mode Broadcast and MeGyro PID.',
+    },
+    activeExtensions: enabledExtensionIds,
+    transport: {
+      mlinkSocketPort: 55278,
+      webSerialBaudRate: MAKEBLOCK_BOARD_PROFILES[profileId].baudRate,
+      binaryHeader: '0xFF 0x55',
+      broadcastDeviceId: '0x46',
+    },
+    generatorTemplate: {
+      lang: profileId === 'codey_esp32' ? 'python' : 'arduinoc',
+      template:
+        profileId === 'codey_esp32'
+          ? "import codey, event, time\nfrom cubesat import obc, eps, adcs, comms, payload\n//( code //)"
+          : "//( include //)\n//( declare //)\nvoid setup() {\n  //( setup //)\n  //( code //)\n}\nvoid loop() {\n  //( _loop //)\n  //( loop //)\n}",
+      splitor: {
+        frame: { left: '//(', right: '//)' },
+        expression: { left: '/*{', right: '}*/' },
+      },
+    },
+  };
+
+  return JSON.stringify(pkg, null, 2);
+}
+

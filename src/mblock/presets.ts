@@ -626,5 +626,164 @@ void loop() {
       },
     },
   },
+  {
+    id: 'prog-mblock5-broadcast',
+    name: 'CyberPi OLED и Broadcast 0x46 (Stage ↔ OBC)',
+    subsystem: 'COMMS',
+    targetBoard: 'CyberPi / ESP32 (MicroPython)',
+    author: 'Артём Соколов',
+    description:
+      'Вывод телеметрии на экран CyberPi/OLED и двусторонний обмен со сценой mBlock 5 по протоколу Upload Mode Broadcast (0x46).',
+    updatedAt: '2026-11-24T11:45:00.000Z',
+    pythonCode: `from cubesat import obc, eps, adcs, comms, payload
+
+def on_boot():
+    obc.set_mode('NOMINAL')
+    eps.set_rail('COMMS_3V3', True)
+    obc.display_oled('V_BAT', eps.battery_volt())
+    comms.broadcast('stage_ready', eps.battery_pct())
+
+def on_broadcast_capture_stage():
+    eps.set_rail('PAYLOAD_5V', True)
+    payload.capture_image(comms.broadcast_value or '1280x720')
+    obc.display_oled('CAM_RES', comms.broadcast_value or '1280x720')
+    comms.broadcast('capture_ok', 'OK')
+`,
+    cppCode: `#include <School76CubeSat.h>
+#include <OfflineBroadcast.h>
+OfflineBroadcast broadcaster;
+
+void onBroadcast_capture_stage() {
+  eps.setRail(RAIL_PAYLOAD_5V, true);
+  payload.captureImage(broadcaster.broadcastValue.c_str());
+  obc.logTelemetry("CAM_RES", 1);
+  broadcaster.broadcast("capture_ok", "OK");
+}
+
+void setup() {
+  CubeSat.begin();
+  obc.setMode(OBC_NOMINAL);
+  eps.setRail(RAIL_COMMS_3V3, true);
+  broadcaster.on("capture_stage", onBroadcast_capture_stage);
+  broadcaster.broadcast("stage_ready", String(eps.batteryPct()));
+}
+
+void loop() {
+  broadcaster.loop();
+}
+`,
+    workspaceJson: {
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: 'sat_event_boot',
+            id: 'bc_boot',
+            x: 36,
+            y: 32,
+            next: {
+              block: {
+                type: 'obc_set_mode',
+                id: 'bc_mode',
+                fields: { MODE: 'NOMINAL' },
+                next: {
+                  block: {
+                    type: 'eps_set_rail',
+                    id: 'bc_rail',
+                    fields: { RAIL: 'COMMS_3V3', STATE: 'ON' },
+                    next: {
+                      block: {
+                        type: 'obc_display_oled',
+                        id: 'bc_oled',
+                        fields: { LABEL: 'V_BAT' },
+                        inputs: {
+                          VAL: {
+                            block: { type: 'eps_read_battery_volt', id: 'bc_volt' },
+                          },
+                        },
+                        next: {
+                          block: {
+                            type: 'uplink_broadcast_msg_val',
+                            id: 'bc_tx_boot',
+                            inputs: {
+                              MSG: {
+                                shadow: {
+                                  type: 'text',
+                                  id: 'bc_tx_msg',
+                                  fields: { TEXT: 'stage_ready' },
+                                },
+                              },
+                              VAL: {
+                                block: { type: 'eps_read_battery_pct', id: 'bc_pct' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: 'uplink_on_broadcast',
+            id: 'bc_rx_hat',
+            x: 36,
+            y: 310,
+            fields: { MSG: 'capture_stage' },
+            next: {
+              block: {
+                type: 'eps_set_rail',
+                id: 'bc_pay_on',
+                fields: { RAIL: 'PAYLOAD_5V', STATE: 'ON' },
+                next: {
+                  block: {
+                    type: 'payload_capture_image',
+                    id: 'bc_cap',
+                    fields: { RES: '1280x720' },
+                    next: {
+                      block: {
+                        type: 'obc_display_oled',
+                        id: 'bc_oled_rx',
+                        fields: { LABEL: 'CAM_RES' },
+                        inputs: {
+                          VAL: {
+                            block: { type: 'uplink_broadcast_value', id: 'bc_val_rep' },
+                          },
+                        },
+                        next: {
+                          block: {
+                            type: 'uplink_broadcast_msg_val',
+                            id: 'bc_ack',
+                            inputs: {
+                              MSG: {
+                                shadow: {
+                                  type: 'text',
+                                  id: 'bc_ack_msg',
+                                  fields: { TEXT: 'capture_ok' },
+                                },
+                              },
+                              VAL: {
+                                shadow: {
+                                  type: 'text',
+                                  id: 'bc_ack_val',
+                                  fields: { TEXT: 'OK' },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
 ];
 

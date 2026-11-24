@@ -1,7 +1,9 @@
 import {
   buildCubeSatTelemetryFrames,
+  formatHexFrame,
   type MakeblockSerialFrame,
 } from './makeblockHardware.ts';
+import { encodeOfflineBroadcastFrame } from './hardwareTransport.ts';
 
 export type ObcMode = 'NOMINAL' | 'SAFE' | 'SCIENCE' | 'DETUMBLE';
 
@@ -64,6 +66,17 @@ export interface CubeSatTelemetry {
   makeblockFramesCount: number;
   imagesCaptured: number;
   lastBeaconText: string;
+  oledLines: string[];
+  lastBroadcastMsg: string;
+  lastBroadcastVal: string;
+  broadcastHistory: {
+    id: string;
+    time: string;
+    direction: 'TX' | 'RX';
+    msg: string;
+    value: string;
+    hex: string;
+  }[];
   simTimeSec: number;
   solarPowerW: number;
   loadPowerW: number;
@@ -308,6 +321,10 @@ export function createInitialTelemetry(scenario: SimScenarioId = 'leo_nominal'):
     makeblockFramesCount: 0,
     imagesCaptured: 0,
     lastBeaconText: 'SCHOOL76-1U READY',
+    oledLines: ['SCHOOL76-1U · READY', 'EPS: 7.94V (74.2%)'],
+    lastBroadcastMsg: '',
+    lastBroadcastVal: '',
+    broadcastHistory: [],
     simTimeSec: 0,
     solarPowerW: 3.1,
     loadPowerW: 3.34,
@@ -466,6 +483,7 @@ export interface CompiledHandlers {
   onBoot: (() => Promise<void>) | null;
   ticks: { intervalSec: number; fn: () => Promise<void> }[];
   commands: Record<string, () => Promise<void>>;
+  broadcasts: Record<string, () => Promise<void>>;
 }
 
 export function createSimRuntime(
@@ -545,6 +563,19 @@ export function createSimRuntime(
         lastBuzzerHz: f,
         logs: appendLog(prev, 'OBC', `MeBuzzer: ${f} Гц (${dur} мс)`),
       }));
+    },
+    displayOled: (label: unknown, val: unknown) => {
+      const lbl = String(label ?? 'TLM').slice(0, 14);
+      const valStr = typeof val === 'number' ? val.toFixed(2) : String(val ?? '');
+      const line = `${lbl}: ${valStr}`.slice(0, 28);
+      updateState((prev) => {
+        const filtered = prev.oledLines.filter((l) => !l.startsWith(`${lbl}: `));
+        return {
+          ...prev,
+          oledLines: [...filtered, line].slice(-4),
+          logs: appendLog(prev, 'OBC', `OLED[${lbl}] = ${valStr}`),
+        };
+      });
     },
     batteryPct: () => Number(getState().batteryPct.toFixed(1)),
     batteryVolt: () => Number(getState().batteryVolt.toFixed(2)),
@@ -721,6 +752,35 @@ export function createSimRuntime(
         };
       });
     },
+    sendBroadcast: (msg: unknown, val?: unknown) => {
+      const msgStr = String(msg ?? 'event').trim() || 'event';
+      const valStr = val !== undefined && val !== null ? String(val) : '';
+      const bytes = encodeOfflineBroadcastFrame(msgStr, valStr || undefined);
+      const hex = formatHexFrame(bytes);
+      updateState((prev) => ({
+        ...prev,
+        makeblockFramesCount: prev.makeblockFramesCount + 1,
+        lastBroadcastMsg: msgStr,
+        lastBroadcastVal: valStr,
+        broadcastHistory: [
+          {
+            id: `bc-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+            time: stamp(),
+            direction: 'TX' as const,
+            msg: msgStr,
+            value: valStr,
+            hex,
+          },
+          ...prev.broadcastHistory,
+        ].slice(0, 20),
+        logs: appendLog(
+          prev,
+          'COMMS',
+          `Broadcast 0x46 -> "${msgStr}"${valStr ? ` (${valStr})` : ''}`
+        ),
+      }));
+    },
+    getBroadcastValue: () => getState().lastBroadcastVal,
     setTxPower: (dbm: unknown) => {
       const val = Number(dbm || 20);
       updateState((prev) => ({
@@ -759,6 +819,7 @@ export function bindCompiledHandlers(
     onBoot: null,
     ticks: [],
     commands: {},
+    broadcasts: {},
   };
   const fn = new Function('sim', 'handlers', jsCode);
   fn(simApi, handlers);

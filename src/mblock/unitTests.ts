@@ -151,6 +151,7 @@ const HAT_TYPES = new Set([
   'sat_event_boot',
   'sat_event_loop_tick',
   'sat_event_telecommand',
+  'uplink_on_broadcast',
 ]);
 
 const BLOCK_TO_SIM_METHOD: Record<string, string> = {
@@ -160,6 +161,7 @@ const BLOCK_TO_SIM_METHOD: Record<string, string> = {
   obc_get_mode: 'getMode',
   obc_set_status_led: 'setLed',
   obc_play_buzzer: 'playBuzzer',
+  obc_display_oled: 'displayOled',
   eps_read_battery_pct: 'batteryPct',
   eps_read_battery_volt: 'batteryVolt',
   eps_read_solar_ma: 'solarCurrent',
@@ -176,6 +178,9 @@ const BLOCK_TO_SIM_METHOD: Record<string, string> = {
   comms_send_telemetry: 'sendTelemetry',
   comms_send_makeblock_frame: 'sendMakeblockFrame',
   comms_set_tx_power: 'setTxPower',
+  uplink_broadcast_msg: 'sendBroadcast',
+  uplink_broadcast_msg_val: 'sendBroadcast',
+  uplink_broadcast_value: 'getBroadcastValue',
   payload_capture_image: 'captureImage',
   payload_read_radiation: 'readRadiation',
   payload_read_temp: 'readTemp',
@@ -937,6 +942,8 @@ function cloneTelemetry(t: CubeSatTelemetry): CubeSatTelemetry {
     faults: { ...t.faults },
     history: t.history.map((p) => ({ ...p })),
     makeblockFrames: t.makeblockFrames.map((f) => ({ ...f, bytes: [...f.bytes] })),
+    oledLines: [...t.oledLines],
+    broadcastHistory: t.broadcastHistory.map((b) => ({ ...b })),
     logs: t.logs.map((l) => ({ ...l })),
   };
 }

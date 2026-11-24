@@ -13,6 +13,12 @@ import {
   Pencil,
   RotateCw,
   FlaskConical,
+  Cpu,
+  Plug,
+  PlugZap,
+  Puzzle,
+  Upload,
+  X,
 } from 'lucide-react';
 import type {
   OnboardProgram,
@@ -45,11 +51,23 @@ import {
 } from '../mblock/unitTests.ts';
 import {
   MAKEBLOCK_BOARD_PROFILES,
+  MBLOCK5_EXTENSIONS_CATALOG,
   buildCubeSatTelemetryFrames,
+  decodeMakeblockStreamFrame,
+  formatHexFrame,
   generateCubeSatS2eExtension,
+  generateMBlock5MextManifest,
   generateSchool76CubeSatHeader,
   type MakeblockBoardProfileId,
 } from '../mblock/makeblockHardware.ts';
+import {
+  decodeOfflineBroadcastFrame,
+  encodeOfflineBroadcastFrame,
+  generateOfflineBroadcastHeader,
+  isWebSerialSupported,
+  type NavigatorWithSerial,
+  type SerialPortLike,
+} from '../mblock/hardwareTransport.ts';
 import { OnboardSimulatorModule } from './OnboardSimulatorModule.tsx';
 import { MBlockUnitTestPanel } from './MBlockUnitTestPanel.tsx';
 
@@ -82,9 +100,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     programs.find((p) => p.id === selectedProgramId) || programs[0];
 
   const [panelMode, setPanelMode] = useState<'tests' | 'live' | 'code' | 'history'>('live');
+  const [execMode, setExecMode] = useState<'live' | 'upload'>('live');
   const [codeLang, setCodeLang] = useState<'python' | 'codey' | 'cpp' | 'bundle'>('python');
   const [boardProfile, setBoardProfile] = useState<MakeblockBoardProfileId>('auriga_stm32');
-  const [bundleFile, setBundleFile] = useState<'s2e' | 'header'>('s2e');
+  const [bundleFile, setBundleFile] = useState<'s2e' | 'header' | 'mext'>('s2e');
   const [pythonCode, setPythonCode] = useState(activeProgram?.pythonCode || '');
   const [codeyCode, setCodeyCode] = useState('');
   const [cppCode, setCppCode] = useState(activeProgram?.cppCode || '');
@@ -99,6 +118,19 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
   const [newVersionNote, setNewVersionNote] = useState('');
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = useState('');
+
+  // mBlock 5 Extensions Center & WebSerial Hardware Transport state
+  const [enabledExtensions, setEnabledExtensions] = useState<string[]>(() =>
+    MBLOCK5_EXTENSIONS_CATALOG.filter((ext) => ext.requiredByDefault).map((ext) => ext.id)
+  );
+  const [showExtensionsModal, setShowExtensionsModal] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [webSerialConnected, setWebSerialConnected] = useState(false);
+  const [serialStatusMsg, setSerialStatusMsg] = useState<string | null>(null);
+  const serialPortRef = useRef<SerialPortLike | null>(null);
+  const serialReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const serialWriterRef = useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
+  const projectFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Create new program modal state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -284,11 +316,52 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     compiledRef.current = null;
   }, []);
 
+  const writeSerialBytes = useCallback(async (bytes: number[]) => {
+    const writer = serialWriterRef.current;
+    if (!writer || bytes.length === 0) return;
+    try {
+      await writer.write(new Uint8Array(bytes));
+    } catch {
+      // ignore transient write errors
+    }
+  }, []);
+
+  const disconnectWebSerial = useCallback(async () => {
+    try {
+      if (serialReaderRef.current) {
+        await serialReaderRef.current.cancel();
+        serialReaderRef.current.releaseLock();
+        serialReaderRef.current = null;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (serialWriterRef.current) {
+        serialWriterRef.current.releaseLock();
+        serialWriterRef.current = null;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (serialPortRef.current) {
+        await serialPortRef.current.close();
+        serialPortRef.current = null;
+      }
+    } catch {
+      // ignore
+    }
+    setWebSerialConnected(false);
+    setSerialStatusMsg('USB отключён');
+  }, []);
+
   useEffect(() => {
     return () => {
       stopSimulation();
+      void disconnectWebSerial();
     };
-  }, [stopSimulation]);
+  }, [stopSimulation, disconnectWebSerial]);
 
   // Start Live mBlock Simulation
   const startSimulation = useCallback(async () => {
@@ -603,9 +676,160 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     }
   };
 
+  const handleStageBroadcast = useCallback(
+    async (msg: string, val: string, forwardToSerial = true) => {
+      const cleanMsg = msg.trim();
+      if (!cleanMsg) return;
+
+      const workspace = workspaceRef.current;
+      const latestJs = workspace ? generateCubeSatCode(workspace, boardProfileRef.current).jsCode : jsCode;
+      if (!compiledRef.current) {
+        const { simApi } = createSimRuntime(
+          () => telemetryRef.current,
+          (updater) => setTelemetry(updater),
+          () => true,
+          true
+        );
+        try {
+          compiledRef.current = bindCompiledHandlers(latestJs, simApi);
+        } catch {
+          // ignore compilation errors on ad-hoc trigger
+        }
+      }
+
+      const packet = encodeOfflineBroadcastFrame(cleanMsg, val || undefined);
+      const hex = formatHexFrame(packet);
+      const stamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+
+      setTelemetry((prev) => ({
+        ...prev,
+        makeblockFramesCount: prev.makeblockFramesCount + 1,
+        lastBroadcastMsg: cleanMsg,
+        lastBroadcastVal: val,
+        broadcastHistory: [
+          {
+            id: `rx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+            time: stamp,
+            direction: 'RX' as const,
+            msg: cleanMsg,
+            value: val,
+            hex,
+          },
+          ...prev.broadcastHistory,
+        ].slice(0, 20),
+        logs: [
+          {
+            id: `${Date.now()}-bc-rx`,
+            time: stamp,
+            source: 'COMMS' as const,
+            text: `Stage Broadcast 0x46 -> "${cleanMsg}"${val ? ` (${val})` : ''}`,
+          },
+          ...prev.logs,
+        ].slice(0, 80),
+      }));
+
+      if (forwardToSerial && serialWriterRef.current && packet.length > 0) {
+        await writeSerialBytes(packet);
+      }
+
+      const handler = compiledRef.current?.broadcasts[cleanMsg];
+      if (handler) {
+        await handler();
+      }
+    },
+    [jsCode, writeSerialBytes]
+  );
+
+  const connectWebSerial = async () => {
+    if (webSerialConnected) {
+      await disconnectWebSerial();
+      return;
+    }
+    if (!isWebSerialSupported()) {
+      setSerialStatusMsg('WebSerial доступен в Chromium/HTTPS; активен виртуальный HIL');
+      return;
+    }
+    try {
+      const serial = (navigator as NavigatorWithSerial).serial;
+      if (!serial) return;
+      const port = await serial.requestPort();
+      const baudRate = MAKEBLOCK_BOARD_PROFILES[boardProfile].baudRate;
+      await port.open({ baudRate });
+      serialPortRef.current = port;
+      if (port.writable) {
+        serialWriterRef.current = port.writable.getWriter();
+      }
+      setWebSerialConnected(true);
+      setSerialStatusMsg(`USB подключён (${baudRate} бод)`);
+
+      if (port.readable) {
+        const reader = port.readable.getReader();
+        serialReaderRef.current = reader;
+        void (async () => {
+          let buf: number[] = [];
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (!value) continue;
+              for (const b of value) {
+                buf.push(b);
+                if (buf.length > 128) buf = buf.slice(-64);
+                const hdrIdx = buf.findIndex((v, i) => v === 0xff && buf[i + 1] === 0x55);
+                if (hdrIdx > 0) buf = buf.slice(hdrIdx);
+                if (buf.length >= 6 && buf[buf.length - 2] === 0x0d && buf[buf.length - 1] === 0x0a) {
+                  const frame = buf;
+                  buf = [];
+                  const bc = decodeOfflineBroadcastFrame(frame);
+                  if (bc.valid && bc.msg) {
+                    void handleStageBroadcast(bc.msg, bc.value || '', false);
+                  } else {
+                    const st = decodeMakeblockStreamFrame(frame);
+                    if (st.valid) {
+                      const stamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+                      setTelemetry((prev) => ({
+                        ...prev,
+                        makeblockFramesCount: prev.makeblockFramesCount + 1,
+                        makeblockFrames: [
+                          {
+                            id: `hw-${Date.now()}`,
+                            time: stamp,
+                            deviceId: 0x06,
+                            deviceLabel: `USB RX #${st.extIdx ?? 0}`,
+                            valueLabel: String(st.value ?? ''),
+                            bytes: frame,
+                            hex: formatHexFrame(frame),
+                          },
+                          ...prev.makeblockFrames,
+                        ].slice(0, 32),
+                      }));
+                    }
+                  }
+                }
+              }
+            }
+          } catch {
+            // port closed
+          } finally {
+            setWebSerialConnected(false);
+          }
+        })();
+      }
+    } catch (err) {
+      setSerialStatusMsg(
+        err instanceof Error && err.name === 'NotFoundError'
+          ? 'Выбор COM-порта отменён'
+          : 'Ошибка открытия COM-порта'
+      );
+    }
+  };
+
   const handleCaptureMakeblockFrame = useCallback(() => {
     setTelemetry((prev) => {
       const frames = buildCubeSatTelemetryFrames(prev);
+      if (serialWriterRef.current && frames[0]) {
+        void writeSerialBytes(frames[0].bytes);
+      }
       const stamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
       return {
         ...prev,
@@ -622,7 +846,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
         ].slice(0, 80),
       };
     });
-  }, []);
+  }, [writeSerialBytes]);
 
   const handleSaveCurrent = (customNote?: string) => {
     const workspace = workspaceRef.current;
@@ -716,6 +940,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
     () => generateSchool76CubeSatHeader(boardProfile),
     [boardProfile]
   );
+  const mextManifestText = React.useMemo(
+    () => generateMBlock5MextManifest(boardProfile, enabledExtensions),
+    [boardProfile, enabledExtensions]
+  );
 
   const displayedCode =
     codeLang === 'python'
@@ -726,12 +954,24 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
           ? cppCode
           : bundleFile === 's2e'
             ? s2eExtensionText
-            : headerLibraryText;
+            : bundleFile === 'mext'
+              ? mextManifestText
+              : headerLibraryText;
 
   const handleCopyCode = () => {
     navigator.clipboard?.writeText(displayedCode);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  const handleDownloadText = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadCode = () => {
@@ -745,14 +985,97 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             ? `${baseName}.ino`
             : bundleFile === 's2e'
               ? 'school76_cubesat.s2e'
-              : 'School76CubeSat.h';
-    const blob = new Blob([displayedCode], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+              : bundleFile === 'mext'
+                ? 'school76_cubesat.mext.json'
+                : 'School76CubeSat.h';
+    handleDownloadText(displayedCode, filename);
+  };
+
+  const handleExportProjectJson = () => {
+    const workspace = workspaceRef.current;
+    const workspaceJson = workspace
+      ? (Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>)
+      : liveWorkspaceJson;
+    const payload = {
+      format: 'school76-mblock5-project',
+      version: '1.2.76',
+      exportedAt: new Date().toISOString(),
+      boardProfile,
+      enabledExtensions,
+      program: {
+        name: activeProgram?.name || 'school76_obc',
+        subsystem: activeProgram?.subsystem || 'OBC',
+        targetBoard: activeProgram?.targetBoard || 'CyberPi / ESP32 (MicroPython)',
+        workspaceJson,
+        pythonCode,
+        codeyCode,
+        cppCode,
+      },
+    };
+    handleDownloadText(
+      JSON.stringify(payload, null, 2),
+      `${activeProgram?.id || 'school76_obc'}.mblock.json`
+    );
+  };
+
+  const handleImportProjectJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImportError(null);
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const nestedProgram =
+        parsed.program && typeof parsed.program === 'object'
+          ? (parsed.program as Record<string, unknown>)
+          : null;
+      const wsJson =
+        (nestedProgram?.workspaceJson as Record<string, unknown> | undefined) ||
+        (parsed.workspaceJson as Record<string, unknown> | undefined) ||
+        (parsed.blocks ? parsed : null);
+
+      if (!wsJson || typeof wsJson !== 'object' || !('blocks' in wsJson)) {
+        setImportError('Файл не содержит корректного дерева блоков Blockly/mBlock (.json).');
+        return;
+      }
+
+      const workspace = workspaceRef.current;
+      if (!workspace) return;
+      stopSimulation();
+      suppressChangeRef.current = true;
+      try {
+        workspace.clear();
+        Blockly.serialization.workspaces.load(wsJson, workspace);
+      } finally {
+        suppressChangeRef.current = false;
+      }
+
+      if (
+        typeof parsed.boardProfile === 'string' &&
+        parsed.boardProfile in MAKEBLOCK_BOARD_PROFILES
+      ) {
+        setBoardProfile(parsed.boardProfile as MakeblockBoardProfileId);
+      }
+      if (Array.isArray(parsed.enabledExtensions)) {
+        setEnabledExtensions(parsed.enabledExtensions.filter((x): x is string => typeof x === 'string'));
+      }
+
+      const nextProfile =
+        typeof parsed.boardProfile === 'string' && parsed.boardProfile in MAKEBLOCK_BOARD_PROFILES
+          ? (parsed.boardProfile as MakeblockBoardProfileId)
+          : boardProfileRef.current;
+      const { pythonCode: py, codeyCode: codey, cppCode: cpp, jsCode: js } =
+        generateCubeSatCode(workspace, nextProfile);
+      setPythonCode(py);
+      setCodeyCode(codey);
+      setCppCode(cpp);
+      setJsCode(js);
+      setLiveWorkspaceJson(Blockly.serialization.workspaces.save(workspace) as Record<string, unknown>);
+      setShowExtensionsModal(false);
+    } catch {
+      setImportError('Не удалось разобрать JSON-проект mBlock.');
+    }
   };
 
   return (
@@ -836,7 +1159,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setPanelMode('live')}
+              onClick={() => {
+                setExecMode('live');
+                setPanelMode('live');
+              }}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 panelMode === 'live'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -847,7 +1173,10 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setPanelMode('code')}
+              onClick={() => {
+                setExecMode('upload');
+                setPanelMode('code');
+              }}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                 panelMode === 'code'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -887,6 +1216,126 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
             {saveFeedback ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
             {saveFeedback || 'Сохранить'}
           </button>
+        </div>
+      </div>
+
+      {/* mBlock 5 Device Manager, Live/Upload Mode & Hardware Transport Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-1.5 bg-slate-50 border-b border-slate-200 text-xs">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Device Selector */}
+          <div className="inline-flex items-center gap-1.5">
+            <Cpu className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-slate-500">Контроллер:</span>
+            <select
+              aria-label="Целевой контроллер mBlock"
+              value={boardProfile}
+              onChange={(e) => setBoardProfile(e.target.value as MakeblockBoardProfileId)}
+              className="px-2 py-1 text-xs font-medium bg-white border border-slate-200 rounded text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            >
+              <option value="auriga_stm32">Auriga / STM32F4</option>
+              <option value="codey_esp32">CyberPi / ESP32</option>
+              <option value="gizduino_avr">MeOrion / e-Gizmo AVR</option>
+            </select>
+          </div>
+
+          {/* Live vs Upload Mode Toggle */}
+          <div className="inline-flex items-center p-0.5 bg-slate-200/70 rounded border border-slate-200">
+            <button
+              type="button"
+              onClick={() => {
+                setExecMode('live');
+                setPanelMode('live');
+              }}
+              className={`px-2.5 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                execMode === 'live'
+                  ? 'bg-emerald-600 text-white'
+                  : 'text-slate-700 hover:text-slate-900'
+              }`}
+            >
+              Live · Сцена
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setExecMode('upload');
+                setPanelMode('code');
+                if (boardProfile === 'codey_esp32') {
+                  setCodeLang('codey');
+                } else {
+                  setCodeLang('cpp');
+                }
+              }}
+              className={`px-2.5 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                execMode === 'upload'
+                  ? 'bg-sky-600 text-white'
+                  : 'text-slate-700 hover:text-slate-900'
+              }`}
+            >
+              Upload · Прошивка
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {serialStatusMsg && (
+            <span className="font-mono text-[11px] text-slate-600">{serialStatusMsg}</span>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void connectWebSerial()}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
+              webSerialConnected
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+            title="Прямое подключение платы по USB UART (0xFF 0x55) или через mLink 127.0.0.1:55278"
+          >
+            {webSerialConnected ? (
+              <PlugZap className="w-3.5 h-3.5 text-emerald-600" />
+            ) : (
+              <Plug className="w-3.5 h-3.5 text-slate-500" />
+            )}
+            {webSerialConnected ? 'USB 0xFF55 (Отключить)' : 'Подключить USB / mLink'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setImportError(null);
+              setShowExtensionsModal(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+          >
+            <Puzzle className="w-3.5 h-3.5 text-sky-600" />
+            Расширения .mext ({enabledExtensions.length})
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportProjectJson}
+            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+            title="Скачать проект блоков mBlock (.mblock.json)"
+          >
+            <Download className="w-3 h-3" />
+            .json
+          </button>
+          <button
+            type="button"
+            onClick={() => projectFileInputRef.current?.click()}
+            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+            title="Загрузить проект блоков mBlock (.json)"
+          >
+            <Upload className="w-3 h-3" />
+            Открыть
+          </button>
+          <input
+            ref={projectFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={(e) => void handleImportProjectJson(e)}
+            className="hidden"
+          />
         </div>
       </div>
 
@@ -951,6 +1400,8 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               }
               onToggleFault={handleToggleFault}
               onSendCommand={sendTelecommand}
+              onStageBroadcast={(msg, val) => void handleStageBroadcast(msg, val, true)}
+              webSerialConnected={webSerialConnected}
               onCaptureMakeblockFrame={handleCaptureMakeblockFrame}
               onClearLogs={() => setTelemetry((p) => ({ ...p, logs: [] }))}
               onRunPreflight={handleRunPreflight}
@@ -1003,7 +1454,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    .s2e / .h
+                    .mext / .s2e / .h
                   </button>
                 </div>
 
@@ -1044,6 +1495,17 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                     </button>
                     <button
                       type="button"
+                      onClick={() => setBoardProfile('codey_esp32')}
+                      className={`px-2 py-0.5 rounded font-medium border transition-colors ${
+                        boardProfile === 'codey_esp32'
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      CyberPi / ESP32
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setBoardProfile('gizduino_avr')}
                       className={`px-2 py-0.5 rounded font-medium border transition-colors ${
                         boardProfile === 'gizduino_avr'
@@ -1051,12 +1513,23 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                           : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                       }`}
                     >
-                      MeOrion / e-Gizmo AVR
+                      MeOrion / AVR
                     </button>
                   </div>
 
                   {codeLang === 'bundle' && (
                     <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setBundleFile('mext')}
+                        className={`px-2 py-0.5 rounded font-mono text-[11px] border transition-colors ${
+                          bundleFile === 'mext'
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        manifest.mext
+                      </button>
                       <button
                         type="button"
                         onClick={() => setBundleFile('s2e')}
@@ -1066,7 +1539,7 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                             : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                         }`}
                       >
-                        school76_cubesat.s2e
+                        .s2e
                       </button>
                       <button
                         type="button"
@@ -1091,9 +1564,11 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
                     ? MAKEBLOCK_BOARD_PROFILES.codey_esp32.description
                     : codeLang === 'cpp'
                       ? MAKEBLOCK_BOARD_PROFILES[boardProfile].description
-                      : bundleFile === 's2e'
-                        ? 'Дескриптор расширения mBlock (.s2e JSON) для загрузки блоков кубсата 1U в Makeblock / e-Gizmo mBlock.'
-                        : `Заголовок School76CubeSat.h с драйверами MeGyro (tau=0.5s), PID-стабилизацией и кадрами 0xFF 0x55 (${MAKEBLOCK_BOARD_PROFILES[boardProfile].mcu}).`}
+                      : bundleFile === 'mext'
+                        ? 'Пакет расширения mBlock 5 Extension Builder (manifest.json + arduinoc шаблоны //(...)//).'
+                        : bundleFile === 's2e'
+                          ? 'Дескриптор расширения mBlock (.s2e JSON) для загрузки блоков кубсата 1U в Makeblock / e-Gizmo mBlock.'
+                          : `Заголовок School76CubeSat.h с драйверами MeGyro (tau=0.5s), PID-стабилизацией и кадрами 0xFF 0x55 (${MAKEBLOCK_BOARD_PROFILES[boardProfile].mcu}).`}
               </div>
 
               <pre className="flex-1 overflow-auto p-4 bg-slate-950 text-slate-100 font-mono text-xs leading-relaxed">
@@ -1332,6 +1807,144 @@ export const MBlockStudio: React.FC<MBlockStudioProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* mBlock 5 Extensions Center & .mext / .json Package Manager Modal */}
+      {showExtensionsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden flex flex-col max-h-[88vh]">
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-50">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Puzzle className="w-4 h-4 text-sky-600" />
+                  Центр расширений mBlock 5 (.mext) и протокол mLink
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Подключение программных моделей ide.mblock.cc: драйверы плат, Upload Mode Broadcast (0x46) и mLink Bridge (127.0.0.1:55278).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExtensionsModal(false)}
+                aria-label="Закрыть центр расширений"
+                className="p-1 text-slate-400 hover:text-slate-700 rounded"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4">
+              {importError && (
+                <div className="px-3 py-2 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800">
+                  {importError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {MBLOCK5_EXTENSIONS_CATALOG.map((ext) => {
+                  const enabled = enabledExtensions.includes(ext.id);
+                  return (
+                    <label
+                      key={ext.id}
+                      className={`p-3 rounded-lg border cursor-pointer transition-colors flex items-start gap-2.5 ${
+                        enabled
+                          ? 'bg-sky-50/60 border-sky-300'
+                          : 'bg-white border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={() =>
+                          setEnabledExtensions((prev) =>
+                            prev.includes(ext.id)
+                              ? prev.filter((id) => id !== ext.id)
+                              : [...prev, ext.id]
+                          )
+                        }
+                        className="mt-0.5 accent-sky-600"
+                      />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-slate-900 truncate">
+                            {ext.name}
+                          </span>
+                          <span className="font-mono text-[10px] text-slate-500 shrink-0">
+                            v{ext.version}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 leading-snug">{ext.description}</p>
+                        <div className="text-[10px] font-mono text-slate-500">
+                          {ext.category} · {ext.blocksCount} блоков · {ext.targets.join(', ')}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                <div className="text-xs font-semibold text-slate-900">
+                  Экспорт пакетов для ide.mblock.cc и локальной прошивки
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleDownloadText(
+                        generateMBlock5MextManifest(boardProfile, enabledExtensions),
+                        'school76_cubesat.mext.json'
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                  >
+                    <Download className="w-3.5 h-3.5 text-sky-600" />
+                    Скачать manifest.mext.json
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleDownloadText(generateOfflineBroadcastHeader(), 'OfflineBroadcast.h')
+                    }
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                  >
+                    <Download className="w-3.5 h-3.5 text-sky-600" />
+                    Скачать OfflineBroadcast.h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportProjectJson}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                  >
+                    <Download className="w-3.5 h-3.5 text-emerald-600" />
+                    Экспорт проекта (.mblock.json)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => projectFileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-sky-600 rounded hover:bg-sky-700"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    Импорт проекта (.json)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
+              <span className="font-mono">
+                Профиль: {MAKEBLOCK_BOARD_PROFILES[boardProfile].label} ({MAKEBLOCK_BOARD_PROFILES[boardProfile].baudRate} бод)
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowExtensionsModal(false)}
+                className="px-3.5 py-1.5 font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100"
+              >
+                Готово
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

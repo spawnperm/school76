@@ -104,6 +104,12 @@ export function registerCubeSatGenerators() {
     return `obc.beep(${freq}, ${ms})\n`;
   };
 
+  pythonGenerator.forBlock['obc_display_oled'] = function (block, generator) {
+    const label = block.getFieldValue('LABEL') || 'MODE';
+    const val = generator.valueToCode(block, 'VAL', PyOrder.NONE) || "''";
+    return `obc.display_oled('${label}', ${val})\n`;
+  };
+
   pythonGenerator.forBlock['eps_read_battery_pct'] = function () {
     return [`eps.battery_pct()`, PyOrder.FUNCTION_CALL];
   };
@@ -178,6 +184,30 @@ export function registerCubeSatGenerators() {
     return `comms.send_makeblock_frame()\n`;
   };
 
+  pythonGenerator.forBlock['uplink_broadcast_msg'] = function (block) {
+    const msg = block.getFieldValue('MSG') || 'telemetry_ok';
+    return `comms.broadcast('${msg}')\n`;
+  };
+
+  pythonGenerator.forBlock['uplink_broadcast_msg_val'] = function (block, generator) {
+    const msg = block.getFieldValue('MSG') || 'vbat';
+    const val = generator.valueToCode(block, 'VAL', PyOrder.NONE) || '0';
+    return `comms.broadcast('${msg}', ${val})\n`;
+  };
+
+  pythonGenerator.forBlock['uplink_on_broadcast'] = function (block, generator) {
+    const msg = block.getFieldValue('MSG') || 'capture';
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '    pass\n';
+    const indented = generator.prefixLines(typeof body === 'string' ? body : body[0], '    ');
+    const fnSafe = msg.replace(/[^a-zA-Z0-9_]/g, '_') || 'msg';
+    return `def on_broadcast_${fnSafe}():\n${indented || '    pass\n'}\n`;
+  };
+
+  pythonGenerator.forBlock['uplink_broadcast_value'] = function () {
+    return [`comms.broadcast_value()`, PyOrder.FUNCTION_CALL];
+  };
+
   pythonGenerator.forBlock['comms_set_tx_power'] = function (block) {
     const dbm = block.getFieldValue('DBM');
     return `comms.set_tx_power(${dbm})\n`;
@@ -203,7 +233,8 @@ export function registerCubeSatGenerators() {
     if (
       block.type === 'sat_event_boot' ||
       block.type === 'sat_event_loop_tick' ||
-      block.type === 'sat_event_telecommand'
+      block.type === 'sat_event_telecommand' ||
+      block.type === 'uplink_on_broadcast'
     ) {
       return code;
     }
@@ -270,6 +301,12 @@ export function registerCubeSatGenerators() {
     const freq = generator.valueToCode(block, 'FREQ', CPP_ORDER.NONE) || '880';
     const ms = generator.valueToCode(block, 'MS', CPP_ORDER.NONE) || '150';
     return `obc.beep(${freq}, ${ms});\n`;
+  };
+
+  cppGenerator.forBlock['obc_display_oled'] = function (block, generator) {
+    const label = String(block.getFieldValue('LABEL') || 'MODE').replace(/"/g, '\\"');
+    const val = generator.valueToCode(block, 'VAL', CPP_ORDER.NONE) || '""';
+    return `Serial.print("${label}: "); Serial.println(${val});\n`;
   };
 
   cppGenerator.forBlock['eps_read_battery_pct'] = function () {
@@ -341,6 +378,30 @@ export function registerCubeSatGenerators() {
 
   cppGenerator.forBlock['comms_send_makeblock_frame'] = function () {
     return `comms.sendMakeblockFrame(eps.batteryVoltage());\n`;
+  };
+
+  cppGenerator.forBlock['uplink_broadcast_msg'] = function (block) {
+    const msg = String(block.getFieldValue('MSG') || 'telemetry_ok').replace(/"/g, '\\"');
+    return `broadcaster.broadcast(String("${msg}"));\n`;
+  };
+
+  cppGenerator.forBlock['uplink_broadcast_msg_val'] = function (block, generator) {
+    const msg = String(block.getFieldValue('MSG') || 'vbat').replace(/"/g, '\\"');
+    const val = generator.valueToCode(block, 'VAL', CPP_ORDER.NONE) || '0';
+    return `broadcaster.broadcast(String("${msg}"), String(${val}));\n`;
+  };
+
+  cppGenerator.forBlock['uplink_on_broadcast'] = function (block, generator) {
+    const msg = String(block.getFieldValue('MSG') || 'capture').replace(/"/g, '\\"');
+    const fnSafe = msg.replace(/[^a-zA-Z0-9_]/g, '_') || 'msg';
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '';
+    const bodyStr = typeof body === 'string' ? body : body[0];
+    return `void onBroadcast_${fnSafe}() {\n${generator.prefixLines(bodyStr, '  ')}}\n// В setup(): broadcaster.on(String("${msg}"), onBroadcast_${fnSafe});\n\n`;
+  };
+
+  cppGenerator.forBlock['uplink_broadcast_value'] = function () {
+    return [`broadcaster.broadcastValue`, CPP_ORDER.ATOMIC];
   };
 
   cppGenerator.forBlock['comms_set_tx_power'] = function (block) {
@@ -447,7 +508,8 @@ export function registerCubeSatGenerators() {
     if (
       block.type === 'sat_event_boot' ||
       block.type === 'sat_event_loop_tick' ||
-      block.type === 'sat_event_telecommand'
+      block.type === 'sat_event_telecommand' ||
+      block.type === 'uplink_on_broadcast'
     ) {
       return code;
     }
@@ -514,6 +576,12 @@ export function registerCubeSatGenerators() {
     const freq = generator.valueToCode(block, 'FREQ', JsOrder.NONE) || '880';
     const ms = generator.valueToCode(block, 'MS', JsOrder.NONE) || '150';
     return `sim.playBuzzer(${freq}, ${ms});\n`;
+  };
+
+  javascriptGenerator.forBlock['obc_display_oled'] = function (block, generator) {
+    const label = String(block.getFieldValue('LABEL') || 'MODE').replace(/'/g, "\\'");
+    const val = generator.valueToCode(block, 'VAL', JsOrder.NONE) || "''";
+    return `sim.displayOled('${label}', ${val});\n`;
   };
 
   javascriptGenerator.forBlock['eps_read_battery_pct'] = function () {
@@ -587,6 +655,29 @@ export function registerCubeSatGenerators() {
     return `sim.sendMakeblockFrame();\n`;
   };
 
+  javascriptGenerator.forBlock['uplink_broadcast_msg'] = function (block) {
+    const msg = String(block.getFieldValue('MSG') || 'telemetry_ok').replace(/'/g, "\\'");
+    return `sim.sendBroadcast('${msg}');\n`;
+  };
+
+  javascriptGenerator.forBlock['uplink_broadcast_msg_val'] = function (block, generator) {
+    const msg = String(block.getFieldValue('MSG') || 'vbat').replace(/'/g, "\\'");
+    const val = generator.valueToCode(block, 'VAL', JsOrder.NONE) || "''";
+    return `sim.sendBroadcast('${msg}', ${val});\n`;
+  };
+
+  javascriptGenerator.forBlock['uplink_on_broadcast'] = function (block, generator) {
+    const msg = String(block.getFieldValue('MSG') || 'capture').replace(/'/g, "\\'");
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '';
+    const bodyStr = typeof body === 'string' ? body : body[0];
+    return `handlers.broadcasts['${msg}'] = async () => {\n${bodyStr}};\n`;
+  };
+
+  javascriptGenerator.forBlock['uplink_broadcast_value'] = function () {
+    return [`sim.getBroadcastValue()`, JsOrder.FUNCTION_CALL];
+  };
+
   javascriptGenerator.forBlock['comms_set_tx_power'] = function (block) {
     return `sim.setTxPower(${block.getFieldValue('DBM')});\n`;
   };
@@ -608,7 +699,8 @@ export function registerCubeSatGenerators() {
     if (
       block.type === 'sat_event_boot' ||
       block.type === 'sat_event_loop_tick' ||
-      block.type === 'sat_event_telecommand'
+      block.type === 'sat_event_telecommand' ||
+      block.type === 'uplink_on_broadcast'
     ) {
       return code;
     }
@@ -669,6 +761,36 @@ export function registerCubeSatGenerators() {
     return `codey.speaker.play_tone(${freq}, (${ms}) / 1000.0)\n`;
   };
 
+  codeyGenerator.forBlock['obc_display_oled'] = function (block, generator) {
+    const label = block.getFieldValue('LABEL') || 'MODE';
+    const val = generator.valueToCode(block, 'VAL', PyOrder.NONE) || "''";
+    return `cyberpi.console.println('${label}: ' + str(${val}))\n`;
+  };
+
+  codeyGenerator.forBlock['uplink_broadcast_msg'] = function (block) {
+    const msg = block.getFieldValue('MSG') || 'telemetry_ok';
+    return `cyberpi.broadcast.set('${msg}', '')\n`;
+  };
+
+  codeyGenerator.forBlock['uplink_broadcast_msg_val'] = function (block, generator) {
+    const msg = block.getFieldValue('MSG') || 'vbat';
+    const val = generator.valueToCode(block, 'VAL', PyOrder.NONE) || '0';
+    return `cyberpi.broadcast.set('${msg}', str(${val}))\n`;
+  };
+
+  codeyGenerator.forBlock['uplink_on_broadcast'] = function (block, generator) {
+    const msg = block.getFieldValue('MSG') || 'capture';
+    const fnSafe = msg.replace(/[^a-zA-Z0-9_]/g, '_') || 'msg';
+    const next = block.getNextBlock();
+    const body = next ? generator.blockToCode(next) : '    pass\n';
+    const indented = generator.prefixLines(typeof body === 'string' ? body : body[0], '    ');
+    return `@event.received('${msg}')\ndef on_bc_${fnSafe}():\n${indented || '    pass\n'}\n`;
+  };
+
+  codeyGenerator.forBlock['uplink_broadcast_value'] = function () {
+    return [`cyberpi.broadcast.get_message()`, PyOrder.FUNCTION_CALL];
+  };
+
   codeyGenerator.forBlock['adcs_read_gyro'] = function (block) {
     const axis = block.getFieldValue('AXIS').toLowerCase();
     return [`codey.motion_sensor.get_gyro(${axis === 'x' ? "'x'" : axis === 'y' ? "'y'" : "'z'"})`, PyOrder.FUNCTION_CALL];
@@ -685,7 +807,8 @@ export function registerCubeSatGenerators() {
     if (
       block.type === 'sat_event_boot' ||
       block.type === 'sat_event_loop_tick' ||
-      block.type === 'sat_event_telecommand'
+      block.type === 'sat_event_telecommand' ||
+      block.type === 'uplink_on_broadcast'
     ) {
       return code;
     }
@@ -716,17 +839,23 @@ export function generateCubeSatCode(
   ].join('\n');
 
   const cppBody = cppGenerator.workspaceToCode(workspace).trim();
+  const usesBroadcast = /\bbroadcaster\./.test(cppBody);
+  const broadcastHeaderLines = usesBroadcast
+    ? ['#include <OfflineBroadcast.h>', 'OfflineBroadcast broadcaster;']
+    : [];
   const cppHeader =
     boardProfile === 'gizduino_avr'
       ? [
           '#include <MeOrion.h>',
           '#include <School76CubeSat.h>',
+          ...broadcastHeaderLines,
           '// Неблокирующий аппаратный планировщик e-Gizmo RTC (10 мс)',
           'unsigned long RTC = 0;',
         ].join('\n')
       : [
           '#include <MeAuriga.h>',
           '#include <School76CubeSat.h>',
+          ...broadcastHeaderLines,
         ].join('\n');
 
   const cppCode = [

@@ -149,6 +149,19 @@ export function registerCubeSatBlocks() {
       colour: '#4C97FF',
       tooltip: 'Подаёт звуковой диагностический сигнал (MeBuzzer / Codey speaker)',
     },
+    {
+      type: 'obc_display_oled',
+      message0: 'экран CyberPi / OLED метка %1 значение %2',
+      args0: [
+        { type: 'field_input', name: 'LABEL', text: 'MODE' },
+        { type: 'input_value', name: 'VAL' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#4C97FF',
+      tooltip: 'Выводит строку телеметрии на цветной дисплей CyberPi или бортовой OLED-экран',
+    },
 
     // 3. EPS · Система энергопитания (Orange #FF8C1A)
     {
@@ -397,6 +410,43 @@ export function registerCubeSatBlocks() {
       colour: '#0FBD8C',
       tooltip: 'Отправляет по UART бинарный пакет Makeblock 0xFF 0x55 с float32 телеметрией',
     },
+    {
+      type: 'uplink_broadcast_msg',
+      message0: 'передать broadcast (0x46) %1',
+      args0: [{ type: 'field_input', name: 'MSG', text: 'telemetry_ok' }],
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#0FBD8C',
+      tooltip: 'Upload Mode Broadcast (mBlock 5): отправляет событие на сцену Stage по 0xFF 0x55',
+    },
+    {
+      type: 'uplink_broadcast_msg_val',
+      message0: 'передать broadcast (0x46) %1 значение %2',
+      args0: [
+        { type: 'field_input', name: 'MSG', text: 'vbat' },
+        { type: 'input_value', name: 'VAL' },
+      ],
+      inputsInline: true,
+      previousStatement: null,
+      nextStatement: null,
+      colour: '#0FBD8C',
+      tooltip: 'Upload Mode Broadcast со значением для взаимодействия устройства и сцены в режиме загрузки',
+    },
+    {
+      type: 'uplink_on_broadcast',
+      message0: 'при приёме broadcast (0x46) %1',
+      args0: [{ type: 'field_input', name: 'MSG', text: 'capture' }],
+      nextStatement: null,
+      colour: '#FFAB19',
+      tooltip: 'Выполняется при получении broadcast-сообщения со сцены Stage или по UART (0x46)',
+    },
+    {
+      type: 'uplink_broadcast_value',
+      message0: 'значение broadcast-сообщения',
+      output: 'String',
+      colour: '#0FBD8C',
+      tooltip: 'Возвращает строковое значение, переданное вместе с последним Upload Mode Broadcast',
+    },
 
     // 6. PAYLOAD · Полезная нагрузка (Rose #FF6680)
     {
@@ -497,6 +547,13 @@ export const CUBESAT_TOOLBOX = {
             MS: { shadow: { type: 'math_number', fields: { NUM: 150 } } },
           },
         },
+        {
+          kind: 'block',
+          type: 'obc_display_oled',
+          inputs: {
+            VAL: { shadow: { type: 'text', fields: { TEXT: 'NOMINAL' } } },
+          },
+        },
       ],
     },
     {
@@ -554,6 +611,16 @@ export const CUBESAT_TOOLBOX = {
         { kind: 'block', type: 'comms_send_telemetry' },
         { kind: 'block', type: 'comms_send_makeblock_frame' },
         { kind: 'block', type: 'comms_set_tx_power' },
+        { kind: 'block', type: 'uplink_broadcast_msg' },
+        {
+          kind: 'block',
+          type: 'uplink_broadcast_msg_val',
+          inputs: {
+            VAL: { shadow: { type: 'math_number', fields: { NUM: 1 } } },
+          },
+        },
+        { kind: 'block', type: 'uplink_on_broadcast' },
+        { kind: 'block', type: 'uplink_broadcast_value' },
       ],
     },
     {

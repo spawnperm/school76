@@ -32,6 +32,7 @@ import {
 } from '../mblock/kinematics.ts';
 import { ThermalPowerHeatmap } from './ThermalPowerHeatmap.tsx';
 import { TelemetryLiveChartsWidget } from './TelemetryLiveChartsWidget.tsx';
+import { CubeSatStageView } from './CubeSatStageView.tsx';
 
 interface OnboardSimulatorModuleProps {
   programName: string;
@@ -51,6 +52,8 @@ interface OnboardSimulatorModuleProps {
   onBatteryOverride: (pct: number) => void;
   onToggleFault: (key: keyof FaultInjectionState) => void;
   onSendCommand: (cmd: string) => void;
+  onStageBroadcast: (msg: string, val: string) => void;
+  webSerialConnected?: boolean;
   onCaptureMakeblockFrame: () => void;
   onClearLogs: () => void;
   onRunPreflight: () => void;
@@ -82,12 +85,14 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
   onBatteryOverride,
   onToggleFault,
   onSendCommand,
+  onStageBroadcast,
+  webSerialConnected = false,
   onCaptureMakeblockFrame,
   onClearLogs,
   onRunPreflight,
   onExportFirmware,
 }) => {
-  const [simSubTab, setSimSubTab] = useState<'bench' | 'thermal' | 'faults' | 'protocol' | 'preflight'>('bench');
+  const [simSubTab, setSimSubTab] = useState<'stage' | 'bench' | 'thermal' | 'faults' | 'protocol' | 'preflight'>('stage');
   const [trajectoryMode, setTrajectoryMode] = useState<TrajectoryModeId>('zenith_pass');
   const [waypointIdx, setWaypointIdx] = useState(6);
   const [copiedGcode, setCopiedGcode] = useState(false);
@@ -183,6 +188,17 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
       <div className="px-4 border-b border-slate-200 flex items-center gap-4 text-xs font-medium bg-white overflow-x-auto">
         <button
           type="button"
+          onClick={() => setSimSubTab('stage')}
+          className={`py-2.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+            simSubTab === 'stage'
+              ? 'border-sky-600 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          Сцена · Stage
+        </button>
+        <button
+          type="button"
           onClick={() => setSimSubTab('bench')}
           className={`py-2.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
             simSubTab === 'bench'
@@ -246,6 +262,15 @@ export const OnboardSimulatorModule: React.FC<OnboardSimulatorModuleProps> = ({
           )}
         </button>
       </div>
+
+      {simSubTab === 'stage' && (
+        <CubeSatStageView
+          telemetry={telemetry}
+          isRunning={isRunning}
+          webSerialConnected={webSerialConnected}
+          onStageBroadcast={onStageBroadcast}
+        />
+      )}
 
       {simSubTab === 'bench' && (
         <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
