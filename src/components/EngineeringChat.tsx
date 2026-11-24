@@ -11,6 +11,8 @@ import { CHAT_CHANNELS } from '../types/cubesat.ts';
 import type { EngineerProfile } from '../hooks/useMissionSync.ts';
 
 interface EngineeringChatProps {
+  projectId: string;
+  projectName: string;
   messages: ChatMessage[];
   tasks: CubeSatTask[];
   programs: OnboardProgram[];
@@ -28,6 +30,8 @@ interface EngineeringChatProps {
 }
 
 export const EngineeringChat: React.FC<EngineeringChatProps> = ({
+  projectId,
+  projectName,
   messages,
   tasks,
   programs,
@@ -58,9 +62,24 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
     if (draftProgramRefId) setProgramRefId(draftProgramRefId);
   }, [draftTaskRefId, draftProgramRefId]);
 
+  const projectMessages = useMemo(
+    () => messages.filter((m) => (m.projectId || 'school76-1u') === projectId),
+    [messages, projectId]
+  );
+
+  const projectTasks = useMemo(
+    () => tasks.filter((t) => (t.projectId || 'school76-1u') === projectId),
+    [tasks, projectId]
+  );
+
+  const projectPrograms = useMemo(
+    () => programs.filter((p) => !p.projectId || p.projectId === projectId),
+    [programs, projectId]
+  );
+
   const channelMessages = useMemo(
-    () => messages.filter((m) => m.channel === activeChannel),
-    [messages, activeChannel]
+    () => projectMessages.filter((m) => m.channel === activeChannel),
+    [projectMessages, activeChannel]
   );
 
   const activeChannelMeta =
@@ -74,6 +93,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
     e.preventDefault();
     if (!text.trim() && !codeText.trim()) return;
     onSendMessage({
+      projectId,
       channel: activeChannel,
       author: profile.name,
       authorRole: `${profile.role} · ${profile.subsystem}`,
@@ -110,7 +130,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
             </div>
             <nav className="space-y-0.5">
               {CHAT_CHANNELS.map((ch) => {
-                const count = messages.filter((m) => m.channel === ch.id).length;
+                const count = projectMessages.filter((m) => m.channel === ch.id).length;
                 const isActive = ch.id === activeChannel;
                 return (
                   <button
@@ -174,7 +194,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
               #{activeChannelMeta.title}
             </h2>
             <p className="text-xs text-slate-500 truncate">
-              {activeChannelMeta.topic}
+              {projectName} · {activeChannelMeta.topic}
             </p>
           </div>
           <div className="text-xs font-mono tabular-nums text-slate-500 shrink-0">
@@ -294,7 +314,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
               className="max-w-[220px] px-2.5 py-1.5 bg-white border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">Прикрепить задачу...</option>
-              {tasks.map((t) => (
+              {projectTasks.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.id} · {t.title}
                 </option>
@@ -307,7 +327,7 @@ export const EngineeringChat: React.FC<EngineeringChatProps> = ({
               className="max-w-[240px] px-2.5 py-1.5 bg-white border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">Прикрепить mBlock ПО...</option>
-              {programs.map((p) => (
+              {projectPrograms.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.subsystem} · {p.name}
                 </option>

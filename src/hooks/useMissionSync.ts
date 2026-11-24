@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChatMessage,
+  CommunityProject,
   CubeSatTask,
   MissionSnapshot,
   OnboardProgram,
+  SocialPost,
   Subsystem,
   TeamPresence,
+  UserProfile,
   WsClientEvent,
   WsServerEvent,
 } from '../types/cubesat.ts';
@@ -17,29 +20,14 @@ export interface EngineerProfile {
   subsystem: Subsystem;
 }
 
-const PROFILE_KEY = 'school76_engineer_profile_v1';
-
-function loadProfile(): EngineerProfile {
-  try {
-    const raw = localStorage.getItem(PROFILE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as EngineerProfile;
-      if (parsed.name && parsed.role && parsed.subsystem) {
-        return parsed;
-      }
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return {
-    name: 'Артём Соколов',
-    role: 'Системный инженер',
-    subsystem: 'OBC',
-  };
-}
-
 export function useMissionSync(activeTab: string) {
-  const [profile, setProfileState] = useState<EngineerProfile>(loadProfile);
+  // Bearer session token held strictly in React memory (never persisted to browser storage)
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [projects, setProjects] = useState<CommunityProject[]>([]);
+  const [posts, setPosts] = useState<SocialPost[]>([]);
   const [tasks, setTasks] = useState<CubeSatTask[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [programs, setPrograms] = useState<OnboardProgram[]>(PRESET_PROGRAMS);
@@ -49,11 +37,32 @@ export function useMissionSync(activeTab: string) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
-  const profileRef = useRef(profile);
   const activeTabRef = useRef(activeTab);
-
-  profileRef.current = profile;
   activeTabRef.current = activeTab;
+
+  const currentUser = useMemo(
+    () => (currentUserId ? users.find((u) => u.id === currentUserId) || null : null),
+    [users, currentUserId]
+  );
+
+  const profile: EngineerProfile = useMemo(
+    () =>
+      currentUser
+        ? {
+            name: currentUser.displayName,
+            role: currentUser.role,
+            subsystem: currentUser.subsystem,
+          }
+        : {
+            name: 'Гость-инженер',
+            role: 'Наблюдатель',
+            subsystem: 'OBC',
+          },
+    [currentUser]
+  );
+
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
 
   const sendEvent = useCallback((event: WsClientEvent) => {
     const ws = wsRef.current;
@@ -62,34 +71,16 @@ export function useMissionSync(activeTab: string) {
     }
   }, []);
 
-  const updateProfile = useCallback(
-    (next: EngineerProfile) => {
-      setProfileState(next);
-      try {
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore storage errors
-      }
-      sendEvent({
-        type: 'presence:join',
-        payload: { ...next, activeTab: activeTabRef.current },
-      });
-    },
-    [sendEvent]
-  );
-
-  // Notify server when engineer switches workspace tabs
   useEffect(() => {
     sendEvent({
       type: 'presence:join',
       payload: { ...profileRef.current, activeTab },
     });
-  }, [activeTab, sendEvent]);
+  }, [activeTab, currentUser?.displayName, currentUser?.role, currentUser?.subsystem, sendEvent]);
 
   useEffect(() => {
     let unmounted = false;
 
-    // Initial REST fetch so UI renders immediately even before WS handshake completes
     fetch('/api/state')
       .then((r) => (r.ok ? r.json() : null))
       .then((data: MissionSnapshot | null) => {
@@ -97,6 +88,9 @@ export function useMissionSync(activeTab: string) {
           setTasks(data.tasks);
           setMessages(data.messages);
           if (data.programs.length > 0) setPrograms(data.programs);
+          if (Array.isArray(data.users)) setUsers(data.users);
+          if (Array.isArray(data.projects)) setProjects(data.projects);
+          if (Array.isArray(data.posts)) setPosts(data.posts);
           setPresence(data.presence);
           setLoading(false);
         }
@@ -134,11 +128,19 @@ export function useMissionSync(activeTab: string) {
               setTasks(msg.payload.tasks);
               setMessages(msg.payload.messages);
               if (msg.payload.programs.length > 0) setPrograms(msg.payload.programs);
+              setUsers(msg.payload.users || []);
+              setProjects(msg.payload.projects || []);
+              setPosts(msg.payload.posts || []);
               setPresence(msg.payload.presence);
               setLoading(false);
               break;
             case 'presence:update':
               setPresence(msg.payload);
+              break;
+            case 'social:sync':
+              setUsers(msg.payload.users);
+              setProjects(msg.payload.projects);
+              setPosts(msg.payload.posts);
               break;
             case 'task:created':
               setTasks((prev) =>
@@ -198,6 +200,140 @@ export function useMissionSync(activeTab: string) {
     };
   }, []);
 
+  const authFetch = useCallback(
+    async (url: string, options: RequestInit = {}) => {
+      const headers = new Headers(options.headers || {});
+      if (authToken) {
+        headers.set('Authorization', `Bearer ${authToken}`);
+      }
+      if (options.body && !headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+      }
+      const res = await fetch(url, { ...options, headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Ошибка запроса');
+      }
+      return data;
+    },
+    [authToken]
+  );
+
+  const login = useCallback(async (username: string, password: string) => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(typeof data.error === 'string' ? data.error : 'Ошибка входа');
+    }
+    setAuthToken(data.token);
+    setCurrentUserId(data.user.id);
+    setUsers((prev) =>
+      prev.some((u) => u.id === data.user.id)
+        ? prev.map((u) => (u.id === data.user.id ? data.user : u))
+        : [...prev, data.user]
+    );
+    return data.user as UserProfile;
+  }, []);
+
+  const register = useCallback(
+    async (payload: {
+      username: string;
+      displayName: string;
+      password: string;
+      role: string;
+      subsystem: Subsystem;
+      bio?: string;
+    }) => {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Ошибка регистрации');
+      }
+      setAuthToken(data.token);
+      setCurrentUserId(data.user.id);
+      setUsers((prev) => [...prev, data.user]);
+      return data.user as UserProfile;
+    },
+    []
+  );
+
+  const logout = useCallback(() => {
+    setAuthToken(null);
+    setCurrentUserId(null);
+  }, []);
+
+  const updateMyProfile = useCallback(
+    async (patch: Partial<Pick<UserProfile, 'displayName' | 'role' | 'subsystem' | 'bio' | 'skills'>>) => {
+      const data = await authFetch('/api/users/me', {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      return data.user as UserProfile;
+    },
+    [authFetch]
+  );
+
+  const toggleFollow = useCallback(
+    async (userId: string) => {
+      await authFetch(`/api/users/${encodeURIComponent(userId)}/follow`, { method: 'POST' });
+    },
+    [authFetch]
+  );
+
+  const createProject = useCallback(
+    async (payload: { name: string; slug: string; description: string; category: string; tags: string[] }) => {
+      const data = await authFetch('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      return data.project as CommunityProject;
+    },
+    [authFetch]
+  );
+
+  const toggleJoinProject = useCallback(
+    async (projectId: string) => {
+      await authFetch(`/api/projects/${encodeURIComponent(projectId)}/join`, { method: 'POST' });
+    },
+    [authFetch]
+  );
+
+  const createPost = useCallback(
+    async (payload: { text: string; projectId?: string; mediaUrls?: string[] }) => {
+      const data = await authFetch('/api/posts', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      return data.post as SocialPost;
+    },
+    [authFetch]
+  );
+
+  const toggleLikePost = useCallback(
+    async (postId: string) => {
+      await authFetch(`/api/posts/${encodeURIComponent(postId)}/like`, { method: 'POST' });
+    },
+    [authFetch]
+  );
+
+  const commentPost = useCallback(
+    async (postId: string, text: string) => {
+      await authFetch(`/api/posts/${encodeURIComponent(postId)}/comment`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      });
+    },
+    [authFetch]
+  );
+
   const createTask = useCallback(
     (payload: Omit<CubeSatTask, 'id' | 'createdAt' | 'updatedAt'>) => {
       sendEvent({ type: 'task:create', payload });
@@ -207,7 +343,6 @@ export function useMissionSync(activeTab: string) {
 
   const updateTask = useCallback(
     (id: string, patch: Partial<Omit<CubeSatTask, 'id' | 'createdAt'>>) => {
-      // Optimistic local update
       setTasks((prev) =>
         prev.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t))
       );
@@ -266,14 +401,29 @@ export function useMissionSync(activeTab: string) {
   );
 
   return {
+    authToken,
+    authFetch,
+    currentUser,
     profile,
-    updateProfile,
+    users,
+    projects,
+    posts,
     tasks,
     messages,
     programs,
     presence,
     connected,
     loading,
+    login,
+    register,
+    logout,
+    updateMyProfile,
+    toggleFollow,
+    createProject,
+    toggleJoinProject,
+    createPost,
+    toggleLikePost,
+    commentPost,
     createTask,
     updateTask,
     deleteTask,

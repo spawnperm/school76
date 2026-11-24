@@ -1,7 +1,19 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Search, MessageSquare, Cpu, Trash2, X } from 'lucide-react';
+import {
+  Plus,
+  Search,
+  MessageSquare,
+  Cpu,
+  Trash2,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  CheckSquare,
+  Square,
+} from 'lucide-react';
 import type {
   ChatChannelId,
+  ChecklistItem,
   CubeSatTask,
   OnboardProgram,
   Subsystem,
@@ -16,6 +28,8 @@ import {
 } from '../types/cubesat.ts';
 
 interface TaskBoardProps {
+  projectId: string;
+  projectName: string;
   tasks: CubeSatTask[];
   programs: OnboardProgram[];
   loading: boolean;
@@ -39,7 +53,28 @@ const PRIORITY_TEXT_CLASS: Record<TaskPriority, string> = {
   critical: 'text-rose-700 font-semibold',
 };
 
+const SUBSYSTEM_BAR_CLASS: Record<Subsystem, string> = {
+  OBC: 'bg-sky-600',
+  EPS: 'bg-amber-500',
+  ADCS: 'bg-violet-600',
+  COMMS: 'bg-emerald-600',
+  PAYLOAD: 'bg-rose-500',
+  GROUND: 'bg-slate-600',
+};
+
+function parseIsoDate(iso?: string): Date | null {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return null;
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formatShortDate(d: Date): string {
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
+
 export const TaskBoard: React.FC<TaskBoardProps> = ({
+  projectId,
+  projectName,
   tasks,
   programs,
   loading,
@@ -54,8 +89,14 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 }) => {
   const [subsystemFilter, setSubsystemFilter] = useState<'ALL' | Subsystem>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [viewMode, setViewMode] = useState<'kanban' | 'table'>('kanban');
+  const [viewMode, setViewMode] = useState<'kanban' | 'gantt' | 'calendar' | 'todo' | 'table'>('kanban');
   const [showCreateModal, setShowCreateModal] = useState(false);
+
+  // Calendar state
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date(2026, 10, 1)); // Nov 2026
+
+  // Todo quick-add inputs keyed by task ID
+  const [todoDrafts, setTodoDrafts] = useState<Record<string, string>>({});
 
   // Create form state
   const [title, setTitle] = useState('');
@@ -65,11 +106,17 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const [assignee, setAssignee] = useState(engineerName);
   const [linkedProgramId, setLinkedProgramId] = useState('');
   const [linkedChannel, setLinkedChannel] = useState<ChatChannelId>('obc-firmware');
+  const [startDate, setStartDate] = useState('2026-11-24');
   const [dueDate, setDueDate] = useState('2026-12-01');
+
+  const projectTasks = useMemo(
+    () => tasks.filter((t) => (t.projectId || 'school76-1u') === projectId),
+    [tasks, projectId]
+  );
 
   const filteredTasks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return tasks.filter((t) => {
+    return projectTasks.filter((t) => {
       if (subsystemFilter !== 'ALL' && t.subsystem !== subsystemFilter) return false;
       if (!q) return true;
       return (
@@ -79,7 +126,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         t.description.toLowerCase().includes(q)
       );
     });
-  }, [tasks, subsystemFilter, searchQuery]);
+  }, [projectTasks, subsystemFilter, searchQuery]);
 
   const activeTask = useMemo(
     () => tasks.find((t) => t.id === focusedTaskId) || null,
@@ -89,25 +136,68 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const subsystemProgress = useMemo(() => {
     const subs: Subsystem[] = ['OBC', 'EPS', 'ADCS', 'COMMS', 'PAYLOAD', 'GROUND'];
     return subs.map((sub) => {
-      const subTasks = tasks.filter((t) => t.subsystem === sub);
+      const subTasks = projectTasks.filter((t) => t.subsystem === sub);
       const total = subTasks.length;
       const done = subTasks.filter((t) => t.status === 'done').length;
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
       return { sub, total, done, pct };
     });
-  }, [tasks]);
+  }, [projectTasks]);
 
   const overallStats = useMemo(() => {
-    const total = tasks.length;
-    const done = tasks.filter((t) => t.status === 'done').length;
+    const total = projectTasks.length;
+    const done = projectTasks.filter((t) => t.status === 'done').length;
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     return { total, done, pct };
-  }, [tasks]);
+  }, [projectTasks]);
+
+  // Gantt Timeline Window Calculation
+  const ganttRange = useMemo(() => {
+    const dates: Date[] = [];
+    for (const t of filteredTasks) {
+      const s = parseIsoDate(t.startDate || t.createdAt);
+      const e = parseIsoDate(t.dueDate);
+      if (s) dates.push(s);
+      if (e) dates.push(e);
+    }
+    const minTs =
+      dates.length > 0
+        ? Math.min(...dates.map((d) => d.getTime())) - 2 * 86400000
+        : new Date(2026, 10, 18).getTime();
+    const maxTs =
+      dates.length > 0
+        ? Math.max(...dates.map((d) => d.getTime())) + 2 * 86400000
+        : new Date(2026, 11, 8).getTime();
+    const totalDays = Math.max(10, Math.min(45, Math.ceil((maxTs - minTs) / 86400000) + 1));
+    const start = new Date(minTs);
+    const days: Date[] = [];
+    for (let i = 0; i < totalDays; i++) {
+      days.push(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
+    }
+    return { start, totalDays, days };
+  }, [filteredTasks]);
+
+  // Calendar Grid Days
+  const calendarDays = useMemo(() => {
+    const y = calendarMonth.getFullYear();
+    const m = calendarMonth.getMonth();
+    const firstDay = new Date(y, m, 1);
+    const startOffset = (firstDay.getDay() + 6) % 7; // Monday = 0
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const cells: { date: Date; inMonth: boolean; iso: string }[] = [];
+    for (let i = -startOffset; i < daysInMonth + ((7 - ((startOffset + daysInMonth) % 7)) % 7); i++) {
+      const d = new Date(y, m, 1 + i);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      cells.push({ date: d, inMonth: d.getMonth() === m, iso });
+    }
+    return cells;
+  }, [calendarMonth]);
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
     onCreateTask({
+      projectId,
       title: title.trim(),
       description: description.trim(),
       subsystem,
@@ -116,12 +206,38 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       assignee: assignee.trim() || engineerName,
       linkedProgramId: linkedProgramId || undefined,
       linkedChannel: linkedChannel || undefined,
+      startDate: startDate || undefined,
       dueDate: dueDate || undefined,
+      progressPct: 0,
+      checklist: [],
     });
     setTitle('');
     setDescription('');
     setLinkedProgramId('');
     setShowCreateModal(false);
+  };
+
+  const handleToggleChecklistItem = (task: CubeSatTask, itemId: string) => {
+    const current = task.checklist || [];
+    const updated: ChecklistItem[] = current.map((c) =>
+      c.id === itemId ? { ...c, done: !c.done } : c
+    );
+    const doneCount = updated.filter((c) => c.done).length;
+    const progressPct = updated.length > 0 ? Math.round((doneCount / updated.length) * 100) : task.progressPct;
+    onUpdateTask(task.id, { checklist: updated, progressPct });
+  };
+
+  const handleAddChecklistItem = (task: CubeSatTask) => {
+    const draft = (todoDrafts[task.id] || '').trim();
+    if (!draft) return;
+    const updated: ChecklistItem[] = [
+      ...(task.checklist || []),
+      { id: `chk-${Date.now().toString(36)}`, text: draft, done: false },
+    ];
+    const doneCount = updated.filter((c) => c.done).length;
+    const progressPct = Math.round((doneCount / updated.length) * 100);
+    onUpdateTask(task.id, { checklist: updated, progressPct });
+    setTodoDrafts((prev) => ({ ...prev, [task.id]: '' }));
   };
 
   return (
@@ -130,10 +246,10 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-            Управление задачами кубсата school76
+            Задачи и планирование · {projectName}
           </h1>
           <p className="text-sm text-slate-600 mt-0.5">
-            Координация подсистем OBC, EPS, ADCS, связи и полезной нагрузки с привязкой к программам mBlock
+            Канбан-доска, диаграмма Ганта, календарь сроков, todo-листы и сводка готовности подсистем
           </p>
         </div>
 
@@ -145,29 +261,33 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Поиск по ID, названию, инженеру..."
-              className="pl-9 pr-3 py-1.5 w-64 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+              className="pl-9 pr-3 py-1.5 w-60 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
 
-          <div className="flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg">
-            <button
-              type="button"
-              onClick={() => setViewMode('kanban')}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-                viewMode === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Доска
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('table')}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-                viewMode === 'table' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Таблица
-            </button>
+          <div className="flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg overflow-x-auto">
+            {(
+              [
+                ['kanban', 'Доска'],
+                ['gantt', 'Гант'],
+                ['calendar', 'Календарь'],
+                ['todo', 'Todo-листы'],
+                ['table', 'Таблица'],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  viewMode === mode
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           <button
@@ -265,7 +385,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         </div>
       </div>
 
-      {/* Loading / Empty / Kanban / Table */}
+      {/* Main View Content */}
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {STATUS_ORDER.map((s) => (
@@ -278,7 +398,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
             Нет задач по выбранному фильтру
           </div>
           <p className="text-sm text-slate-500">
-            Создайте новую задачу для подсистемы кубсата или сбросьте поисковый запрос.
+            Создайте новую задачу для проекта «{projectName}» или сбросьте фильтры.
           </p>
           <button
             type="button"
@@ -292,6 +412,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           </button>
         </div>
       ) : viewMode === 'kanban' ? (
+        /* 1. KANBAN BOARD */
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
           {STATUS_ORDER.map((status) => {
             const colTasks = filteredTasks.filter((t) => t.status === status);
@@ -312,6 +433,8 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                 <div className="space-y-2.5">
                   {colTasks.map((task) => {
                     const linkedProg = programs.find((p) => p.id === task.linkedProgramId);
+                    const chkTotal = task.checklist?.length || 0;
+                    const chkDone = task.checklist?.filter((c) => c.done).length || 0;
                     return (
                       <article
                         key={task.id}
@@ -333,11 +456,10 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
                         <div className="flex items-center justify-between gap-2 pt-1 text-xs text-slate-500">
                           <span className="truncate">{task.assignee}</span>
-                          {task.dueDate && (
-                            <span className="font-mono tabular-nums shrink-0">
-                              {task.dueDate}
-                            </span>
-                          )}
+                          <span className="font-mono tabular-nums shrink-0">
+                            {chkTotal > 0 ? `✓ ${chkDone}/${chkTotal} · ` : ''}
+                            {task.dueDate || '—'}
+                          </span>
                         </div>
 
                         {(linkedProg || task.linkedChannel) && (
@@ -375,8 +497,298 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
             );
           })}
         </div>
+      ) : viewMode === 'gantt' ? (
+        /* 2. GANTT CHART */
+        <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-semibold text-slate-700">
+              График Ганта по задачам и зависимостям ({formatShortDate(ganttRange.days[0])} —{' '}
+              {formatShortDate(ganttRange.days[ganttRange.days.length - 1])})
+            </div>
+            <div className="text-xs text-slate-500">
+              Нажмите на строку или полосу задачи для изменения сроков и прогресса
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <div className="min-w-[960px]">
+              {/* Timeline Header */}
+              <div className="grid grid-cols-12 border-b border-slate-200 bg-slate-50/60 text-[11px] font-mono text-slate-500">
+                <div className="col-span-4 px-4 py-2 font-sans font-semibold text-slate-600 border-r border-slate-200">
+                  Задача и подсистема
+                </div>
+                <div
+                  className="col-span-8 grid"
+                  style={{ gridTemplateColumns: `repeat(${ganttRange.totalDays}, minmax(0, 1fr))` }}
+                >
+                  {ganttRange.days.map((day, idx) => (
+                    <div
+                      key={day.toISOString()}
+                      className={`py-2 text-center border-r border-slate-100 last:border-r-0 ${
+                        day.getDay() === 0 || day.getDay() === 6 ? 'bg-slate-100/70' : ''
+                      }`}
+                    >
+                      {idx % 2 === 0 ? formatShortDate(day) : day.getDate()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Gantt Rows */}
+              <div className="divide-y divide-slate-100">
+                {filteredTasks.map((task) => {
+                  const s = parseIsoDate(task.startDate || task.createdAt) || ganttRange.start;
+                  const e = parseIsoDate(task.dueDate) || new Date(s.getTime() + 3 * 86400000);
+                  const startIdx = Math.max(
+                    0,
+                    Math.floor((s.getTime() - ganttRange.start.getTime()) / 86400000)
+                  );
+                  const endIdx = Math.min(
+                    ganttRange.totalDays - 1,
+                    Math.max(startIdx, Math.floor((e.getTime() - ganttRange.start.getTime()) / 86400000))
+                  );
+                  const spanDays = Math.max(1, endIdx - startIdx + 1);
+                  const pct =
+                    typeof task.progressPct === 'number'
+                      ? task.progressPct
+                      : task.status === 'done'
+                        ? 100
+                        : 25;
+
+                  return (
+                    <div
+                      key={task.id}
+                      onClick={() => onFocusTask(task.id)}
+                      className="grid grid-cols-12 items-center hover:bg-slate-50 cursor-pointer transition-colors"
+                    >
+                      <div className="col-span-4 px-4 py-2.5 border-r border-slate-200 space-y-0.5 min-w-0">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="font-mono font-medium text-slate-700">
+                            {task.id} · {task.subsystem}
+                          </span>
+                          <span className="font-mono tabular-nums text-[11px] text-slate-500">
+                            {pct}%
+                          </span>
+                        </div>
+                        <div className="text-xs font-medium text-slate-900 truncate">
+                          {task.title}
+                        </div>
+                        {task.dependsOn && task.dependsOn.length > 0 && (
+                          <div className="text-[11px] font-mono text-slate-400">
+                            После: {task.dependsOn.join(', ')}
+                          </div>
+                        )}
+                      </div>
+
+                      <div
+                        className="col-span-8 grid items-center py-2.5 relative"
+                        style={{ gridTemplateColumns: `repeat(${ganttRange.totalDays}, minmax(0, 1fr))` }}
+                      >
+                        <div
+                          style={{
+                            gridColumn: `${startIdx + 1} / span ${spanDays}`,
+                          }}
+                          className="mx-0.5 h-6 rounded bg-slate-200 overflow-hidden relative flex items-center"
+                        >
+                          <div
+                            style={{ width: `${pct}%` }}
+                            className={`h-full ${SUBSYSTEM_BAR_CLASS[task.subsystem]} opacity-90`}
+                          />
+                          <span className="absolute inset-0 px-2 flex items-center justify-between text-[10px] font-mono font-medium text-slate-900 mix-blend-normal truncate">
+                            <span className="bg-white/80 px-1 rounded truncate">
+                              {task.assignee.split(' ')[0]} · {formatShortDate(s)}–{formatShortDate(e)}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : viewMode === 'calendar' ? (
+        /* 3. MISSION CALENDAR */
+        <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-900 capitalize">
+              {calendarMonth.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
+            </h2>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setCalendarMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))
+                }
+                className="p-1.5 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                aria-label="Предыдущий месяц"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalendarMonth(new Date(2026, 10, 1))}
+                className="px-3 py-1 text-xs font-medium bg-white border border-slate-200 rounded hover:bg-slate-100"
+              >
+                Ноябрь 2026
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setCalendarMonth((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))
+                }
+                className="p-1.5 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                aria-label="Следующий месяц"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500">
+            {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((d) => (
+              <div key={d} className="py-2 px-3 border-r border-slate-200 last:border-r-0">
+                {d}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-7 divide-x divide-y divide-slate-200">
+            {calendarDays.map((cell) => {
+              const dayTasks = filteredTasks.filter((t) => t.dueDate === cell.iso);
+              return (
+                <div
+                  key={cell.iso}
+                  className={`min-h-[112px] p-2 space-y-1.5 ${
+                    cell.inMonth ? 'bg-white' : 'bg-slate-50/70 text-slate-400'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-xs font-mono tabular-nums">
+                    <span className={cell.inMonth ? 'font-medium text-slate-700' : 'text-slate-400'}>
+                      {cell.date.getDate()}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStartDate(cell.iso);
+                        setDueDate(cell.iso);
+                        setAssignee(engineerName);
+                        setShowCreateModal(true);
+                      }}
+                      title="Добавить задачу на эту дату"
+                      className="text-slate-400 hover:text-sky-600 text-xs px-1"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    {dayTasks.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => onFocusTask(t.id)}
+                        className="w-full text-left px-2 py-1 text-[11px] bg-slate-50 hover:bg-sky-50 border border-slate-200 rounded truncate transition-colors"
+                      >
+                        <span className="font-mono font-semibold text-slate-700">{t.id}</span>{' '}
+                        <span className="text-slate-800">{t.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : viewMode === 'todo' ? (
+        /* 4. INTERACTIVE TODO & CHECKLISTS VIEW */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {filteredTasks.map((task) => {
+            const items = task.checklist || [];
+            const doneCount = items.filter((c) => c.done).length;
+            return (
+              <section
+                key={task.id}
+                className="bg-white border border-slate-200 rounded-lg p-4 space-y-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-mono text-slate-500">
+                      {task.id} · {task.subsystem} · {TASK_STATUS_LABELS[task.status]}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onFocusTask(task.id)}
+                      className="text-sm font-semibold text-slate-900 hover:text-sky-700 text-left mt-0.5"
+                    >
+                      {task.title}
+                    </button>
+                  </div>
+                  <span className="text-xs font-mono tabular-nums text-slate-500 shrink-0">
+                    {doneCount}/{items.length}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5">
+                  {items.length === 0 ? (
+                    <div className="text-xs text-slate-400">
+                      Чек-лист пуст — добавьте первый шаг ниже.
+                    </div>
+                  ) : (
+                    items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleToggleChecklistItem(task, item.id)}
+                        className="w-full flex items-start gap-2.5 text-left py-1 px-1.5 rounded hover:bg-slate-50 transition-colors"
+                      >
+                        {item.done ? (
+                          <CheckSquare className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                        )}
+                        <span
+                          className={`text-xs leading-relaxed ${
+                            item.done ? 'line-through text-slate-400' : 'text-slate-800'
+                          }`}
+                        >
+                          {item.text}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAddChecklistItem(task);
+                  }}
+                  className="flex items-center gap-2 pt-2 border-t border-slate-100"
+                >
+                  <input
+                    type="text"
+                    value={todoDrafts[task.id] || ''}
+                    onChange={(e) =>
+                      setTodoDrafts((prev) => ({ ...prev, [task.id]: e.target.value }))
+                    }
+                    placeholder="Добавить пункт чек-листа..."
+                    className="flex-1 px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                  <button
+                    type="submit"
+                    className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    Добавить
+                  </button>
+                </form>
+              </section>
+            );
+          })}
+        </div>
       ) : (
-        /* Dense Table View */
+        /* 5. DENSE TABLE VIEW */
         <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -385,6 +797,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                 <th className="py-2.5 px-4">Подсистема</th>
                 <th className="py-2.5 px-4">Задача</th>
                 <th className="py-2.5 px-4">Статус</th>
+                <th className="py-2.5 px-4">Прогресс</th>
                 <th className="py-2.5 px-4">Приоритет</th>
                 <th className="py-2.5 px-4">Ответственный</th>
                 <th className="py-2.5 px-4 text-right">Срок</th>
@@ -409,6 +822,9 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                   <td className="py-2.5 px-4 text-xs text-slate-700 whitespace-nowrap">
                     {TASK_STATUS_LABELS[task.status]}
                   </td>
+                  <td className="py-2.5 px-4 font-mono tabular-nums text-xs text-slate-700 whitespace-nowrap">
+                    {task.progressPct ?? 0}%
+                  </td>
                   <td className={`py-2.5 px-4 text-xs whitespace-nowrap ${PRIORITY_TEXT_CLASS[task.priority]}`}>
                     {TASK_PRIORITY_LABELS[task.priority]}
                   </td>
@@ -425,7 +841,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         </div>
       )}
 
-      {/* Task Detail Drawer / Modal */}
+      {/* Task Detail Drawer */}
       {activeTask && (
         <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30">
           <div className="w-full max-w-lg bg-white h-full border-l border-slate-200 shadow-xl flex flex-col">
@@ -496,6 +912,30 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
                 <div>
                   <label className="block text-xs font-medium text-slate-500 mb-1">
+                    Начало (Гант)
+                  </label>
+                  <input
+                    type="date"
+                    value={activeTask.startDate || ''}
+                    onChange={(e) => onUpdateTask(activeTask.id, { startDate: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">
+                    Срок (Дедлайн)
+                  </label>
+                  <input
+                    type="date"
+                    value={activeTask.dueDate || ''}
+                    onChange={(e) => onUpdateTask(activeTask.id, { dueDate: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">
                     Подсистема
                   </label>
                   <select
@@ -527,11 +967,31 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
               </div>
 
               <div>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="font-medium text-slate-500">Прогресс выполнения</span>
+                  <span className="font-mono tabular-nums text-slate-800">
+                    {activeTask.progressPct ?? 0}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={activeTask.progressPct ?? 0}
+                  onChange={(e) =>
+                    onUpdateTask(activeTask.id, { progressPct: Number(e.target.value) })
+                  }
+                  className="w-full accent-sky-600"
+                />
+              </div>
+
+              <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
                   Техническое описание
                 </label>
                 <textarea
-                  rows={4}
+                  rows={3}
                   value={activeTask.description}
                   onChange={(e) => onUpdateTask(activeTask.id, { description: e.target.value })}
                   className="w-full px-3 py-2 text-sm text-slate-800 border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
@@ -646,7 +1106,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
             className="w-full max-w-lg bg-white border border-slate-200 rounded-lg shadow-lg p-6 space-y-4"
           >
             <h3 className="text-lg font-semibold text-slate-900">
-              Новая задача по разработке кубсата
+              Новая задача · {projectName}
             </h3>
 
             <div className="space-y-3">
@@ -664,7 +1124,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
                     Подсистема
@@ -672,7 +1132,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                   <select
                     value={subsystem}
                     onChange={(e) => setSubsystem(e.target.value as Subsystem)}
-                    className="w-full px-2.5 py-2 text-sm border border-slate-200 rounded-md"
+                    className="w-full px-2 py-2 text-sm border border-slate-200 rounded-md"
                   >
                     {(Object.keys(SUBSYSTEM_LABELS) as Subsystem[]).map((sub) => (
                       <option key={sub} value={sub}>
@@ -689,7 +1149,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                   <select
                     value={priority}
                     onChange={(e) => setPriority(e.target.value as TaskPriority)}
-                    className="w-full px-2.5 py-2 text-sm border border-slate-200 rounded-md"
+                    className="w-full px-2 py-2 text-sm border border-slate-200 rounded-md"
                   >
                     {(['low', 'medium', 'high', 'critical'] as TaskPriority[]).map((p) => (
                       <option key={p} value={p}>
@@ -701,13 +1161,25 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Срок
+                    Начало
+                  </label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full px-2 py-2 text-xs border border-slate-200 rounded-md"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Дедлайн
                   </label>
                   <input
                     type="date"
                     value={dueDate}
                     onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full px-2.5 py-2 text-sm border border-slate-200 rounded-md"
+                    className="w-full px-2 py-2 text-xs border border-slate-200 rounded-md"
                   />
                 </div>
               </div>

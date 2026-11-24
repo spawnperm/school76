@@ -12,8 +12,15 @@ export type ChatChannelId =
   | 'comms-rf'
   | 'payload';
 
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 export interface CubeSatTask {
   id: string;
+  projectId: string;
   title: string;
   description: string;
   subsystem: Subsystem;
@@ -22,7 +29,11 @@ export interface CubeSatTask {
   assignee: string;
   linkedProgramId?: string;
   linkedChannel?: ChatChannelId;
+  startDate?: string;
   dueDate?: string;
+  progressPct?: number;
+  dependsOn?: string[];
+  checklist?: ChecklistItem[];
   createdAt: string;
   updatedAt: string;
 }
@@ -34,6 +45,7 @@ export interface ChatCodeSnippet {
 
 export interface ChatMessage {
   id: string;
+  projectId: string;
   channel: ChatChannelId;
   author: string;
   authorRole: string;
@@ -60,6 +72,7 @@ export interface ProgramVersion {
 
 export interface OnboardProgram {
   id: string;
+  projectId?: string;
   name: string;
   subsystem: Subsystem;
   targetBoard: TargetBoard;
@@ -70,6 +83,83 @@ export interface OnboardProgram {
   cppCode: string;
   versions?: ProgramVersion[];
   updatedAt: string;
+}
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  displayName: string;
+  role: string;
+  subsystem: Subsystem;
+  bio: string;
+  skills: string[];
+  followers: string[];
+  following: string[];
+  joinedProjectIds: string[];
+  createdAt: string;
+}
+
+export interface CommunityProject {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  ownerId: string;
+  memberIds: string[];
+  forgejoRepo: string;
+  s3Bucket: string;
+  createdAt: string;
+}
+
+export interface SocialComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface SocialPost {
+  id: string;
+  projectId?: string;
+  authorId: string;
+  authorName: string;
+  authorHandle: string;
+  authorRole: string;
+  text: string;
+  mediaUrls: string[];
+  likes: string[];
+  comments: SocialComment[];
+  createdAt: string;
+}
+
+export interface ForgejoFileEntry {
+  path: string;
+  name: string;
+  sha: string;
+  size: number;
+  updatedAt: string;
+}
+
+export interface ForgejoCommit {
+  sha: string;
+  message: string;
+  author: string;
+  path: string;
+  timestamp: string;
+}
+
+export interface GarageObjectMeta {
+  key: string;
+  bucket: string;
+  size: number;
+  contentType: string;
+  etag: string;
+  uploadedBy: string;
+  uploadedAt: string;
+  url: string;
 }
 
 export interface TeamPresence {
@@ -85,6 +175,9 @@ export interface MissionSnapshot {
   tasks: CubeSatTask[];
   messages: ChatMessage[];
   programs: OnboardProgram[];
+  users: UserProfile[];
+  projects: CommunityProject[];
+  posts: SocialPost[];
   presence: TeamPresence[];
 }
 
@@ -107,6 +200,7 @@ export type WsServerEvent =
   | { type: 'chat:message'; payload: ChatMessage }
   | { type: 'program:saved'; payload: OnboardProgram }
   | { type: 'program:deleted'; payload: { id: string } }
+  | { type: 'social:sync'; payload: { users: UserProfile[]; projects: CommunityProject[]; posts: SocialPost[] } }
   | { type: 'error'; payload: { message: string } };
 
 export const SUBSYSTEM_LABELS: Record<Subsystem, string> = {
@@ -133,7 +227,7 @@ export const TASK_PRIORITY_LABELS: Record<TaskPriority, string> = {
 };
 
 export const CHAT_CHANNELS: { id: ChatChannelId; title: string; topic: string }[] = [
-  { id: 'general', title: 'general', topic: 'Общая координация миссии school76' },
+  { id: 'general', title: 'general', topic: 'Общая координация миссии и сообщества' },
   { id: 'obc-firmware', title: 'obc-firmware', topic: 'Прошивка OBC, FreeRTOS и mBlock-логика' },
   { id: 'eps-power', title: 'eps-power', topic: 'Энергобюджет, MPPT, АКБ Li-Ion и шины питания' },
   { id: 'adcs-attitude', title: 'adcs-attitude', topic: 'IMU, датчики Солнца и демпфирование B-dot' },
