@@ -50,6 +50,7 @@ export default function App() {
   const [draftTaskRefId, setDraftTaskRefId] = useState<string | null>(null);
   const [draftProgramRefId, setDraftProgramRefId] = useState<string | null>(null);
   const [initialWikiDoc, setInitialWikiDoc] = useState<string | null>(null);
+  const [initialWikiMode, setInitialWikiMode] = useState<'wiki' | 'office' | null>(null);
   const [initialTaskSubsystem, setInitialTaskSubsystem] = useState<Subsystem | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showGitHubModal, setShowGitHubModal] = useState(false);
@@ -126,7 +127,18 @@ export default function App() {
 
   const openWikiDocument = (docPath: string) => {
     setInitialWikiDoc(docPath);
+    setInitialWikiMode('wiki');
     setActiveTab('wiki');
+  };
+
+  const handleDashboardNavigateTab = (tab: 'tasks' | 'wiki' | 'office' | 'mblock' | 'chat') => {
+    if (tab === 'office') {
+      setInitialWikiMode('office');
+      setActiveTab('wiki');
+    } else {
+      if (tab === 'wiki') setInitialWikiMode('wiki');
+      setActiveTab(tab);
+    }
   };
 
   return (
@@ -208,7 +220,7 @@ export default function App() {
             onToggleLikePost={toggleLikePost}
             onCommentPost={commentPost}
             onRequireAuth={() => setShowAuthModal(true)}
-            onNavigateTab={(tab) => setActiveTab(tab)}
+            onNavigateTab={handleDashboardNavigateTab}
             onOpenProgram={openProgramInMBlock}
             onOpenChannel={(ch) => {
               setActiveChannel(ch);
@@ -256,9 +268,12 @@ export default function App() {
         {activeTab === 'wiki' && (
           <WikiKnowledgeBase
             project={activeProject}
+            tasks={tasks}
             isAuthenticated={Boolean(currentUser)}
             initialDocPath={initialWikiDoc}
             onConsumeInitialDocPath={() => setInitialWikiDoc(null)}
+            initialWorkspaceMode={initialWikiMode}
+            onConsumeInitialWorkspaceMode={() => setInitialWikiMode(null)}
             onRequireAuth={() => setShowAuthModal(true)}
             onOpenGitHubSync={() => setShowGitHubModal(true)}
             authFetch={authFetch}

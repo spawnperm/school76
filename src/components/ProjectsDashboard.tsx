@@ -10,6 +10,7 @@ import {
   Copy,
   Cpu,
   Download,
+  FileSpreadsheet,
   FileText,
   GitBranch,
   GitCommit,
@@ -57,7 +58,7 @@ interface ProjectsDashboardProps {
   programs: OnboardProgram[];
   membersCount: number;
   onOpenSubsystemTasks: (subsystem: Subsystem) => void;
-  onNavigateTab: (tab: 'tasks' | 'wiki' | 'mblock' | 'chat') => void;
+  onNavigateTab: (tab: 'tasks' | 'wiki' | 'office' | 'mblock' | 'chat') => void;
   onOpenGitHubSync: () => void;
   onOpenTask?: (taskId: string) => void;
   onOpenWikiDoc?: (docPath: string) => void;
@@ -553,6 +554,15 @@ export const ProjectsDashboard: React.FC<ProjectsDashboardProps> = ({
               {generatingReadme ? 'Формирование README...' : 'README.md (ИИ)'}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => onNavigateTab('office')}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100"
+            title="Открыть редактор таблиц и документов Univer (.xlsx / .docx)"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Офис Univer
+          </button>
         </div>
       </div>
 

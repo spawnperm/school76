@@ -740,7 +740,7 @@ interface ProjectsViewProps {
   onToggleLikePost: (postId: string) => Promise<void>;
   onCommentPost: (postId: string, text: string) => Promise<void>;
   onRequireAuth: () => void;
-  onNavigateTab: (tab: 'tasks' | 'wiki' | 'mblock' | 'chat') => void;
+  onNavigateTab: (tab: 'tasks' | 'wiki' | 'office' | 'mblock' | 'chat') => void;
   onOpenProgram: (programId: string) => void;
   onOpenChannel: (channel: ChatChannelId) => void;
   onOpenWikiDoc: (docPath: string) => void;
