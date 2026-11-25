@@ -5,6 +5,7 @@ import { MARKETPLACE_CATALOG } from '../../src/harness/marketplaceCatalog.ts';
 import type {
   MakeblockBoardProfileId,
   MarketplaceEntry,
+  MarketplaceModuleDescriptor,
   MarketplaceModuleState,
   MarketplaceSnapshot,
 } from '../../src/harness/types.ts';
@@ -43,9 +44,9 @@ export function createMarketplaceController(
     const knownVerdaccio = new Set(
       MARKETPLACE_CATALOG.map((m) => m.verdaccioPackage).filter(Boolean) as string[]
     );
-    const dynamicModules = (verdaccio?.listPackages() || [])
+    const dynamicModules: MarketplaceModuleDescriptor[] = (verdaccio?.listPackages() || [])
       .filter((pkg) => !knownVerdaccio.has(pkg.name))
-      .map((pkg) => ({
+      .map((pkg): MarketplaceModuleDescriptor => ({
         id: pkg.marketplaceModuleId || `mod-verdaccio-${pkg.name.split('/').pop()}`,
         name: pkg.name,
         shortLabel: pkg.name.split('/').pop() || pkg.name,

@@ -85,7 +85,7 @@ export const PostgresConsole: React.FC = () => {
           <div className="flex items-center gap-2">
             <Database className="w-4 h-4 text-sky-700" />
             <div>
-              <div className="text-xs font-bold text-slate-900">PostgreSQL 16 Schema</div>
+              <div className="text-xs font-bold text-slate-900">PostgreSQL 17 Schema</div>
               <div className="text-[11px] font-mono text-slate-500">
                 {connection?.driver || 'pg-compat'} · {connection?.database || 'school76_mission'}
               </div>

@@ -1,3 +1,6 @@
+// Loaded before any other import so modules that read `process.env` at import
+// time (auth secret, pool config) already see the values from .env.
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import fs from 'fs';
@@ -62,6 +65,13 @@ import {
 } from './server/githubSync.ts';
 import { createServerHarness, registerHarnessRoutes } from './server/harness/runtime.ts';
 import { PostgresMissionStore } from './server/postgresStore.ts';
+import {
+  initializeMissionState,
+  scheduleStateSync,
+  flushStateSync,
+  getPgStateStatus,
+} from './server/db/postgresState.ts';
+import { closePool, isPgConfigured, describeTarget } from './server/db/pool.ts';
 import { NatsEventBus } from './server/natsBus.ts';
 import { TraefikGateway } from './server/traefikGateway.ts';
 import { DirectusHeadlessService } from './server/directusService.ts';
@@ -570,6 +580,10 @@ function saveState(state: PersistedState) {
   } catch (err) {
     console.error('Failed to persist school76 state:', err);
   }
+  // The JSON file above stays the local/offline copy; PostgreSQL, when
+  // configured, receives the same snapshot write-behind so request handlers do
+  // not block on the network.
+  scheduleStateSync(state);
 }
 
 function clampStr(val: unknown, maxLen: number, fallback = ''): string {
@@ -587,7 +601,9 @@ function sanitizeMediaUrl(val: unknown): string | null {
 }
 
 async function startServer() {
-  const state = loadState();
+  const boot = await initializeMissionState(loadState);
+  const state = boot.state as PersistedState;
+  console.log(`[school76] Mission state source: ${boot.source} — ${boot.note}`);
   ensureGarageBucket('school76-media');
 
   function resolveProjectForSync(projectId?: string): CommunityProject | undefined {
@@ -958,6 +974,8 @@ async function startServer() {
       programs: state.programs.length,
       projects: state.projects.length,
       users: state.users.length,
+      persistedTo: boot.source,
+      postgres: getPgStateStatus(),
     });
   });
 
@@ -2429,7 +2447,30 @@ ${recentCommitsText}`;
   const port = Number(process.env.PORT || 3000);
   server.listen(port, '0.0.0.0', () => {
     console.log(`school76 server listening on http://0.0.0.0:${port}`);
+    if (isPgConfigured()) {
+      console.log(`[school76] PostgreSQL: ${describeTarget()}`);
+    }
   });
+
+  // Drain the write-behind queue before exiting so a Ctrl+C right after an edit
+  // does not lose the last snapshot.
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[school76] ${signal} received, flushing state...`);
+    try {
+      await flushStateSync();
+      await closePool();
+    } catch (err) {
+      console.error('[school76] Shutdown flush failed:', err);
+    }
+    server.close(() => process.exit(0));
+    // Never hang forever on a stuck socket.
+    setTimeout(() => process.exit(0), 5_000).unref();
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
 startServer();

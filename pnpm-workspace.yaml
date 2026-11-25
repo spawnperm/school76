@@ -1,0 +1,16 @@
+# pnpm build-script approvals.
+#
+# pnpm 10+ refuses to run dependency lifecycle scripts unless they are allow-listed
+# here, and an unapproved package makes `pnpm install` exit non-zero — which breaks
+# `pnpm dev`/`pnpm build` too. The entries below are exactly the packages this
+# project needs scripts from:
+#   esbuild     — downloads its platform binary; Vite cannot build without it.
+#   @google/genai — postinstall step used by the Gemini client.
+#   protobufjs  — generates its runtime bundle.
+# `vue-demi` is only a shim used by transitive Vue tooling; its script is not
+# needed for this React app, so it stays blocked.
+allowBuilds:
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
+  vue-demi: false

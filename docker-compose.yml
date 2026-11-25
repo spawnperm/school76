@@ -1,0 +1,41 @@
+# Infrastructure for school76 (WSL2 + Docker).
+#
+# Run from inside WSL:  docker compose up -d
+# The app itself still runs on the Windows host (`pnpm dev`); it reaches this
+# database through WSL2's localhost forwarding on 127.0.0.1:5433.
+#
+# Why host port 5433 and not 5432: 5432 is already occupied on this machine
+# (native PostgreSQL service on Windows and another project's container inside
+# WSL). Keeping our mapping distinct lets both stacks run at the same time.
+#
+# There is deliberately no `app` service here: the portal is a Vite/tsx dev
+# process on the host, and packaging it as a container is a separate concern
+# from having a real PostgreSQL to talk to.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: school76-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-school76_mission}
+      POSTGRES_USER: ${POSTGRES_USER:-school76}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-school76}
+      # Deterministic collation for reproducible ORDER BY across machines.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # Bound to loopback only: the database is a development dependency, not
+      # something that should be reachable from the local network.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - school76-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  school76-pgdata:
+    name: school76-pgdata

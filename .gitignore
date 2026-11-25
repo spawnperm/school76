@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 data/
+
+# Local agent memory store (runtime state, not project source).
+.mnemon/

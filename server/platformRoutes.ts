@@ -362,7 +362,7 @@ export function registerPlatformRoutes(app: express.Express, deps: PlatformRoute
       { id: 'tinacms', label: 'TinaCMS Git Editor', layer: 'services', tech: 'TinaCMS + Forgejo', status: 'healthy', metric: `${tinacms.listDocuments().length} docs`, x: 330, y: 310 },
       { id: 'dify', label: 'Dify LLMOps Engine', layer: 'services', tech: 'Dify + Gemini RAG', status: 'healthy', metric: `${dify.getRuns().length} runs`, x: 520, y: 310 },
       { id: 'zod', label: 'Zod Contract Core', layer: 'services', tech: 'Zod v4 Validation', status: 'healthy', metric: '7 schemas', x: 700, y: 310 },
-      { id: 'postgres', label: 'PostgreSQL 16 Store', layer: 'data', tech: pgConn.externalConfigured ? 'pg.Pool' : 'PG-Compat SQL', status: 'healthy', metric: `${pgStore.getTablesSchema().length} tables`, x: 190, y: 450 },
+      { id: 'postgres', label: 'PostgreSQL 17 Store', layer: 'data', tech: pgConn.externalConfigured ? 'pg.Pool' : 'PG-Compat SQL', status: 'healthy', metric: `${pgStore.getTablesSchema().length} tables`, x: 190, y: 450 },
       { id: 'nats', label: 'NATS JetStream Bus', layer: 'data', tech: 'NATS + WS Bridge', status: 'healthy', metric: `${natsStatus.totalMessages} msgs`, x: 420, y: 450 },
       { id: 'cordis', label: 'DeepSeek-Harness', layer: 'data', tech: 'Cordis Seams', status: 'healthy', metric: `${snap.metrics.activePlugins} plugins`, x: 650, y: 450 },
     ];
@@ -392,7 +392,7 @@ export function registerPlatformRoutes(app: express.Express, deps: PlatformRoute
       '  Traefik --> Storybook[Storybook Explorer]',
       '  Refine --> Directus[Directus Data Studio]',
       '  Scalar --> Zod[Zod v4 Schemas]',
-      '  Directus --> Postgres[(PostgreSQL 16)]',
+      '  Directus --> Postgres[(PostgreSQL 17)]',
       '  Directus --> NATS((NATS JetStream))',
       '  TinaCMS[TinaCMS Git] --> NATS',
       '  Dify[Dify LLMOps RAG] --> NATS',

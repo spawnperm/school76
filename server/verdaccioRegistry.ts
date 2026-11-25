@@ -167,7 +167,7 @@ const DEFAULT_DSH_PACKAGES: PublishVerdaccioPackageInput[] = [
     name: '@school76/dsh-store-postgres',
     version: '1.0.0',
     description:
-      'Реляционный провайдер PostgreSQL 16 + Zod для хранения проектов, задач подсистем, программ mBlock и сделок AtomicCRM.',
+      'Реляционный провайдер PostgreSQL 17 + Zod для хранения проектов, задач подсистем, программ mBlock и сделок AtomicCRM.',
     author: 'school76 Stack',
     subsystem: 'DATA · PostgreSQL',
     bundle: 'dsh-base',

@@ -243,7 +243,7 @@ export function createServerHarness(
   kernel.plugin(
     {
       id: 'dsh-store-postgres',
-      name: 'PostgreSQL 16 + Zod Store',
+      name: 'PostgreSQL 17 + Zod Store',
       description: 'Реляционный провайдер PostgreSQL (pg.Pool / встроенный SQL-движок) с валидацией Zod для проектов, задач и AtomicCRM.',
       bundle: 'dsh-base',
       kind: 'seam-provider',
@@ -251,7 +251,7 @@ export function createServerHarness(
       providesSeam: 'dsh-store',
       apply(ctx) {
         ctx.provide('store', {
-          driver: 'postgresql-16 (pg + zod)',
+          driver: 'postgresql-17 (pg + zod)',
           getTasks: port.getTasks,
           addTask: port.addTask,
           updateTaskStatus: port.updateTaskStatus,

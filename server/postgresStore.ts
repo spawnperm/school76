@@ -3,6 +3,7 @@ import path from 'path';
 import { Pool } from 'pg';
 import type { CrmContact, CrmDeal } from '../src/schemas/missionSchemas.ts';
 import type { CommunityProject, CubeSatTask, OnboardProgram } from '../src/types/cubesat.ts';
+import { getPool } from './db/pool.ts';
 
 export interface PostgresColumnInfo {
   name: string;
@@ -43,31 +44,11 @@ export interface PostgresStorePort {
   getPrograms: () => OnboardProgram[];
 }
 
-declare global {
-  var _school76ExternalPgPool: Pool | undefined;
-}
-
 function getExternalPgPool(): Pool | null {
-  const host = process.env.POSTGRES_HOST?.trim();
-  const user = process.env.POSTGRES_USER?.trim();
-  const database = process.env.POSTGRES_DB?.trim();
-  if (!host || !user || !database) return null;
-
-  if (!global._school76ExternalPgPool) {
-    global._school76ExternalPgPool = new Pool({
-      host,
-      port: Number(process.env.POSTGRES_PORT || 5432),
-      user,
-      password: process.env.POSTGRES_PASSWORD || undefined,
-      database,
-      max: 5,
-      connectionTimeoutMillis: 4000,
-    });
-    global._school76ExternalPgPool.on('error', (err) => {
-      console.warn('[PostgreSQL] Idle pool notice:', err.message);
-    });
-  }
-  return global._school76ExternalPgPool;
+  // Shares the process-wide pool from server/db/pool.ts: the SQL console and the
+  // mission store talk to the same database, and a second pool would only
+  // double the connection count.
+  return getPool();
 }
 
 function createSeedCrm(): CrmPersistedFile {
@@ -277,11 +258,11 @@ export class PostgresMissionStore {
         process.env.POSTGRES_DB?.trim()
     );
     return {
-      driver: hasExternal ? 'pg.Pool (PostgreSQL 16)' : 'embedded-pg-compat (PostgreSQL 16 SQL)',
+      driver: hasExternal ? 'pg.Pool (PostgreSQL 17)' : 'embedded-pg-compat (PostgreSQL 17 SQL)',
       externalConfigured: hasExternal,
       database: process.env.POSTGRES_DB?.trim() || 'school76_mission',
       host: process.env.POSTGRES_HOST?.trim() ? 'configured (env)' : 'embedded-local',
-      dialect: 'PostgreSQL 16 + Zod Schema',
+      dialect: 'PostgreSQL 17 + Zod Schema',
     };
   }
 
